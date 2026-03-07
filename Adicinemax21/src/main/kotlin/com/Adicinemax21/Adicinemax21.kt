@@ -174,10 +174,12 @@ open class Adicinemax21 : TmdbProvider() {
 
         val type = getType(data.type)
         val append = "alternative_titles,credits,external_ids,keywords,videos,recommendations"
+        
+        // REVISI 1: Menghapus '&include_video_language=id,en' agar semua bahasa trailer terdeteksi
         val resUrl = if (type == TvType.Movie) {
-            "$tmdbAPI/movie/${data.id}?api_key=$apiKey&append_to_response=$append&include_video_language=id,en"
+            "$tmdbAPI/movie/${data.id}?api_key=$apiKey&append_to_response=$append"
         } else {
-            "$tmdbAPI/tv/${data.id}?api_key=$apiKey&append_to_response=$append&include_video_language=id,en"
+            "$tmdbAPI/tv/${data.id}?api_key=$apiKey&append_to_response=$append"
         }
         val res = app.get(resUrl).parsedSafe<MediaDetail>()
             ?: throw ErrorLoadingException("Invalid Json Response")
@@ -210,37 +212,12 @@ open class Adicinemax21 : TmdbProvider() {
         val recommendations =
             res.recommendations?.results?.mapNotNull { media -> media.toSearchResponse() }
 
-        // --- MODIFIKASI TRAILER ADIXTREAM (KINOCHECK API UNTUK DIRECT MP4) ---
-        var finalTrailerUrl: String? = null
-        var isRawTrailer = false
-
-        try {
-            // Tembak KinoCheck API menggunakan TMDB ID
-            val kinoUrl = "https://api.kinocheck.de/movies?tmdb_id=${data.id}&language=en"
-            val kinoRes = app.get(kinoUrl).text
-            
-            // Regex untuk mengekstrak URL .mp4 dari response JSON KinoCheck
-            val match = "\"url\":\"(https?:\\\\/\\\\/[^\"]+\\\\.mp4)\"".toRegex().find(kinoRes)
-                ?: "\"url\":\"(https?://[^\"]+\\.mp4)\"".toRegex().find(kinoRes) 
-                
-            if (match != null) {
-                // Bersihkan backslash jika JSON di-escape
-                finalTrailerUrl = match.groupValues[1].replace("\\/", "/")
-                isRawTrailer = true
-            }
-        } catch (e: Exception) {
-            // Abaikan jika KinoCheck gagal
-        }
-
-        // Fallback: Jika KinoCheck gagal atau tidak ada MP4, gunakan YouTube dari TMDB
-        if (finalTrailerUrl == null) {
-            finalTrailerUrl = res.videos?.results
-                ?.filter { it.site == "YouTube" && it.key?.isNotBlank() == true && it.type == "Trailer" }
-                ?.sortedByDescending { it.type == "Trailer" }
-                ?.map { "https://www.youtube.com/watch?v=${it.key}" }
-                ?.firstOrNull()
-        }
-        // --------------------------------------------------------------------
+        // REVISI 2: Menggunakan firstOrNull() agar outputnya murni String
+        val trailer = res.videos?.results
+            ?.filter { it.site == "YouTube" && it.key?.isNotBlank() == true && it.type == "Trailer" }
+            ?.sortedByDescending { it.type == "Trailer" }
+            ?.map { "https://www.youtube.com/watch?v=${it.key}" }
+            ?.firstOrNull()
 
         return if (type == TvType.TvSeries) {
             val lastSeason = res.lastEpisodeToAir?.seasonNumber
@@ -299,16 +276,7 @@ open class Adicinemax21 : TmdbProvider() {
                 this.recommendations = recommendations
                 this.actors = actors
                 this.contentRating = fetchContentRating(data.id, "US")
-                
-                // --- INSERT MODIFIED TRAILER HERE ---
-                if (finalTrailerUrl != null) {
-                    if (isRawTrailer) {
-                        addTrailer(finalTrailerUrl, addRaw = true)
-                    } else {
-                        addTrailer(finalTrailerUrl)
-                    }
-                }
-                
+                addTrailer(trailer)
                 addTMDbId(data.id.toString())
                 addImdbId(res.externalIds?.imdbId)
             }
@@ -344,16 +312,7 @@ open class Adicinemax21 : TmdbProvider() {
                 this.recommendations = recommendations
                 this.actors = actors
                 this.contentRating = fetchContentRating(data.id, "US")
-                
-                // --- INSERT MODIFIED TRAILER HERE ---
-                if (finalTrailerUrl != null) {
-                    if (isRawTrailer) {
-                        addTrailer(finalTrailerUrl, addRaw = true)
-                    } else {
-                        addTrailer(finalTrailerUrl)
-                    }
-                }
-                
+                addTrailer(trailer)
                 addTMDbId(data.id.toString())
                 addImdbId(res.externalIds?.imdbId)
             }
