@@ -200,7 +200,7 @@ open class Adicinemax21 : TmdbProvider() {
             .ifEmpty { res.keywords?.keywords?.mapNotNull { it.name } }
 
         val actors = res.credits?.cast?.mapNotNull { cast ->
-            ActorData(
+             ActorData(
                 Actor(
                     cast.name ?: cast.originalName
                     ?: return@mapNotNull null, getImageUrl(cast.profilePath)
@@ -210,12 +210,37 @@ open class Adicinemax21 : TmdbProvider() {
         val recommendations =
             res.recommendations?.results?.mapNotNull { media -> media.toSearchResponse() }
 
-        // FIX V3: "Safe Mode" Trailer
-        val trailer = res.videos?.results
-            ?.filter { it.site == "YouTube" && it.key?.isNotBlank() == true && it.type == "Trailer" }
-            ?.sortedByDescending { it.type == "Trailer" }
-            ?.map { "https://www.youtube.com/watch?v=${it.key}" }
-            ?.take(1)
+        // --- MODIFIKASI TRAILER ADIXTREAM (KINOCHECK API UNTUK DIRECT MP4) ---
+        var finalTrailerUrl: String? = null
+        var isRawTrailer = false
+
+        try {
+            // Tembak KinoCheck API menggunakan TMDB ID
+            val kinoUrl = "https://api.kinocheck.de/movies?tmdb_id=${data.id}&language=en"
+            val kinoRes = app.get(kinoUrl).text
+            
+            // Regex untuk mengekstrak URL .mp4 dari response JSON KinoCheck
+            val match = "\"url\":\"(https?:\\\\/\\\\/[^\"]+\\\\.mp4)\"".toRegex().find(kinoRes)
+                ?: "\"url\":\"(https?://[^\"]+\\.mp4)\"".toRegex().find(kinoRes) 
+                
+            if (match != null) {
+                // Bersihkan backslash jika JSON di-escape
+                finalTrailerUrl = match.groupValues[1].replace("\\/", "/")
+                isRawTrailer = true
+            }
+        } catch (e: Exception) {
+            // Abaikan jika KinoCheck gagal
+        }
+
+        // Fallback: Jika KinoCheck gagal atau tidak ada MP4, gunakan YouTube dari TMDB
+        if (finalTrailerUrl == null) {
+            finalTrailerUrl = res.videos?.results
+                ?.filter { it.site == "YouTube" && it.key?.isNotBlank() == true && it.type == "Trailer" }
+                ?.sortedByDescending { it.type == "Trailer" }
+                ?.map { "https://www.youtube.com/watch?v=${it.key}" }
+                ?.firstOrNull()
+        }
+        // --------------------------------------------------------------------
 
         return if (type == TvType.TvSeries) {
             val lastSeason = res.lastEpisodeToAir?.seasonNumber
@@ -256,7 +281,7 @@ open class Adicinemax21 : TmdbProvider() {
                         }.apply {
                             this.addDate(eps.airDate)
                         }
-                    }
+                     }
             }?.flatten() ?: listOf()
             newTvSeriesLoadResponse(
                 title,
@@ -274,7 +299,16 @@ open class Adicinemax21 : TmdbProvider() {
                 this.recommendations = recommendations
                 this.actors = actors
                 this.contentRating = fetchContentRating(data.id, "US")
-                addTrailer(trailer)
+                
+                // --- INSERT MODIFIED TRAILER HERE ---
+                if (finalTrailerUrl != null) {
+                    if (isRawTrailer) {
+                        addTrailer(finalTrailerUrl, addRaw = true)
+                    } else {
+                        addTrailer(finalTrailerUrl)
+                    }
+                }
+                
                 addTMDbId(data.id.toString())
                 addImdbId(res.externalIds?.imdbId)
             }
@@ -310,7 +344,16 @@ open class Adicinemax21 : TmdbProvider() {
                 this.recommendations = recommendations
                 this.actors = actors
                 this.contentRating = fetchContentRating(data.id, "US")
-                addTrailer(trailer)
+                
+                // --- INSERT MODIFIED TRAILER HERE ---
+                if (finalTrailerUrl != null) {
+                    if (isRawTrailer) {
+                        addTrailer(finalTrailerUrl, addRaw = true)
+                    } else {
+                        addTrailer(finalTrailerUrl)
+                    }
+                }
+                
                 addTMDbId(data.id.toString())
                 addImdbId(res.externalIds?.imdbId)
             }
@@ -365,7 +408,7 @@ open class Adicinemax21 : TmdbProvider() {
                     res.episode,
                     subtitleCallback,
                     callback
-                )
+               )
             },
             {
                 invokeAdimoviebox(
@@ -442,7 +485,7 @@ open class Adicinemax21 : TmdbProvider() {
             },
             {
                 invokeWyzie(res.id, res.season, res.episode, subtitleCallback)
-            },
+             },
             {
                 invokeSuperembed(
                     res.id,
