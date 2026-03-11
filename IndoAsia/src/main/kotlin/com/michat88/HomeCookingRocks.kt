@@ -37,12 +37,18 @@ class HomeCookingRocks : MainAPI() {
             val titleElement = element.selectFirst(".entry-title a, h2 a")
             val title = titleElement?.text() ?: return@mapNotNull null
             val link = titleElement.attr("href")
-            val image = element.selectFirst("img")?.attr("src")
+            
+            // 👇 PERBAIKAN: Logika deteksi gambar Lazy Loading
+            val imgElement = element.selectFirst("img")
+            val image = imgElement?.attr("data-src")?.takeIf { it.isNotBlank() }
+                ?: imgElement?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
+                ?: imgElement?.attr("src")
             
             newMovieSearchResponse(title, link, TvType.Movie) {
                 this.posterUrl = image
             }
         }
+       
         return newHomePageResponse(request.name, home, hasNext = elements.isNotEmpty())
     }
 
@@ -53,7 +59,12 @@ class HomeCookingRocks : MainAPI() {
             val titleElement = element.selectFirst(".entry-title a, h2 a")
             val title = titleElement?.text() ?: return@mapNotNull null
             val url = titleElement.attr("href")
-            val image = element.selectFirst("img")?.attr("src")
+            
+            // 👇 PERBAIKAN: Diterapkan juga di search agar seragam dan aman
+            val imgElement = element.selectFirst("img")
+            val image = imgElement?.attr("data-src")?.takeIf { it.isNotBlank() }
+                ?: imgElement?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
+                ?: imgElement?.attr("src")
             
             newMovieSearchResponse(title, url, TvType.Movie) {
                 this.posterUrl = image
