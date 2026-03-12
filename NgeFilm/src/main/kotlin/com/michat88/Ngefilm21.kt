@@ -142,15 +142,22 @@ class Ngefilm21 : MainAPI() {
                         val pageContent = app.get(fixedUrl, headers = mapOf("User-Agent" to UA_BROWSER)).text 
 
                         // [1] UNIVERSAL RPM LIVE & P2PPLAY (SERVER 1 & 5)
-                        Regex("""(?i)https?://([^/]+(?:rpmlive\.online|p2pplay\.pro)).*?[#&?]id=([a-zA-Z0-9_]+)""").findAll(pageContent).forEach {
-                            extractRpm(it.groupValues[2], it.groupValues[1], callback)
+                        // Regex diperluas untuk menangkap format /v/ID atau ?id=ID
+                        Regex("""(?i)src=["'](https?://([^/]+(?:rpmlive\.online|p2pplay\.pro)).*?(?:id=|/v/|/e/|#)([a-zA-Z0-9_-]+)[^"']*)["']""").findAll(pageContent).forEach {
+                            extractRpm(it.groupValues[3], it.groupValues[2], callback)
                         }
 
                         // [2] UNIVERSAL XVIDEOSHARING (SERVER 3 & 4)
                         Regex("""(?i)(?:src|href)\s*=\s*["'](https://[^"']*/(?:e|embed)/[a-zA-Z0-9_-]+)["']""").findAll(pageContent).forEach {
                             val targetUrl = it.groupValues[1]
                             if (targetUrl.contains(Regex("""(?i)hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre"""))) {
-                                extractMasukestin(targetUrl, callback)
+                                // Potong kompas! Bypass JS Redirect dengan merakit URL mentah secara paksa
+                                val isEmbed = targetUrl.contains("/embed/")
+                                val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").substringBefore("\"").substringBefore("'").trim('/')
+                                val domain = if (isEmbed) "smoothpre.com" else "niramirus.com"
+                                val directUrl = "https://$domain/${if (isEmbed) "embed" else "e"}/$videoId"
+                                
+                                extractMasukestin(directUrl, domain, callback)
                             }
                         }
 
@@ -164,15 +171,13 @@ class Ngefilm21 : MainAPI() {
                             extractXshotcok(it.groupValues[1], callback)
                         }
 
-                        // [5] GENERIC & ABYSS CDN (SERVER 2)
+                        // [5] GENERIC & ABYSS CDN BYPASS (SERVER 2)
                         Regex("""(?i)src=["'](https://[^"']*(?:short\.icu|mixdrop|newer\.stream)[^"']*)["']""").findAll(pageContent).forEach { 
                             val url = it.groupValues[1]
                             if (url.contains("short.icu")) {
-                                val finalUrl = app.get(url, headers = mapOf("Referer" to fixedUrl)).url
-                                if (finalUrl.contains("abyss")) {
-                                    // Bypass Abyss Cloudflare & Websocket
-                                    loadExtractor(finalUrl.replace("abysscdn.com", "abyss.to"), subtitleCallback, callback)
-                                }
+                                // Bypass JS Redirect short.icu: Ambil ID-nya langsung dan lempar ke Abyss
+                                val id = url.substringAfterLast("/").substringBefore("?")
+                                loadExtractor("https://abyss.to/?v=$id", subtitleCallback, callback)
                             } else {
                                 loadExtractor(url, subtitleCallback, callback)
                             }
@@ -184,18 +189,19 @@ class Ngefilm21 : MainAPI() {
         return true
     }
 
-    // --- UNIVERSAL XVIDEOSHARING LOGIC (Masukestin, Smoothpre, Niramirus, Cybervynx) ---
-    private suspend fun extractMasukestin(url: String, callback: (ExtractorLink) -> Unit) {
+    // --- UNIVERSAL XVIDEOSHARING LOGIC (Masukestin, Smoothpre, Niramirus) ---
+    private suspend fun extractMasukestin(url: String, domain: String, callback: (ExtractorLink) -> Unit) {
         try {
-            // Melakukan GET untuk membongkar URL asli jika ada redirect (misal cybervynx -> niramirus)
-            val initialRes = app.get(url, headers = mapOf("User-Agent" to UA_BROWSER, "Referer" to mainUrl))
-            val realUrl = initialRes.url
-            val domain = realUrl.substringAfter("https://").substringBefore("/") 
-            val doc = initialRes.text
-            val cookies = initialRes.cookies
+            val response = app.get(url, headers = mapOf(
+                "User-Agent" to UA_BROWSER,
+                "Referer" to mainUrl, 
+                "Origin" to "https://$domain",
+                "Upgrade-Insecure-Requests" to "1"
+            ))
             
-            // Ekstrak ID dari path /e/ atau /embed/
-            val videoId = realUrl.split("/e/", "/embed/").last().substringBefore("?").substringBefore("\"").substringBefore("'")
+            val doc = response.text
+            val cookies = response.cookies
+            val videoId = url.split("/e/", "/embed/").last().substringBefore("?").substringBefore("\"").substringBefore("'")
             
             val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d.*?\.split\('\|'\)\)""")
             val packedCode = packedRegex.find(doc)?.value
@@ -212,7 +218,7 @@ class Ngefilm21 : MainAPI() {
                         val apiUrl = "https://$domain/dl?op=view&file_code=$videoId&hash=$hash&embed=1&referer=$domain"
                         val apiRes = app.get(apiUrl, headers = mapOf(
                             "User-Agent" to UA_BROWSER,
-                            "Referer" to realUrl,
+                            "Referer" to url,
                             "X-Requested-With" to "XMLHttpRequest"
                         ), cookies = cookies).text 
                         
