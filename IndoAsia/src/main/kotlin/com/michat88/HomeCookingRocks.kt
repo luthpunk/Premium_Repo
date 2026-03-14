@@ -13,7 +13,6 @@ class HomeCookingRocks : MainAPI() {
     
     override var name = "Home Cooking Rocks"
     override var mainUrl = "https://homecookingrocks.com"
-    // DITAMBAHKAN LABEL NSFW DI SINI 👇
     override var supportedTypes = setOf(TvType.NSFW) 
     override var lang = "id"
     override val hasMainPage = true
@@ -38,7 +37,6 @@ class HomeCookingRocks : MainAPI() {
             val title = titleElement?.text() ?: return@mapNotNull null
             val link = titleElement.attr("href")
             
-            // 👇 PERBAIKAN: Logika deteksi gambar Lazy Loading
             val imgElement = element.selectFirst("img")
             val image = imgElement?.attr("data-src")?.takeIf { it.isNotBlank() }
                 ?: imgElement?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
@@ -60,7 +58,6 @@ class HomeCookingRocks : MainAPI() {
             val title = titleElement?.text() ?: return@mapNotNull null
             val url = titleElement.attr("href")
             
-            // 👇 PERBAIKAN: Diterapkan juga di search agar seragam dan aman
             val imgElement = element.selectFirst("img")
             val image = imgElement?.attr("data-src")?.takeIf { it.isNotBlank() }
                 ?: imgElement?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
@@ -90,13 +87,40 @@ class HomeCookingRocks : MainAPI() {
         }
     }
 
+    // Fungsi helper eksklusif untuk membongkar BERAPA PUN jumlah script ImaxStreams
+    private fun multiUnpack(html: String): String {
+        var unpacked = html
+        try {
+            val packRegex = Regex("""\}\s*\(\s*'(.*?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'([^']+)'\.split\('\|'\)""", RegexOption.DOT_MATCHES_ALL)
+            val matches = packRegex.findAll(html)
+            for (match in matches) {
+                var p = match.groupValues[1]
+                val a = match.groupValues[2].toInt()
+                val c = match.groupValues[3].toInt()
+                val k = match.groupValues[4].split("|")
+                fun toBase(num: Int, base: Int): String {
+                    val chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    var res = ""; var n = num; if (n == 0) return "0"
+                    while (n > 0) { res = chars[n % base] + res; n /= base }
+                    return res
+                }
+                for (i in c - 1 downTo 0) {
+                    if (k.getOrNull(i)?.isNotEmpty() == true) {
+                        p = p.replace(Regex("""\b${toBase(i, a)}\b"""), k[i])
+                    }
+                }
+                unpacked += "\n" + p
+            }
+        } catch (e: Exception) {}
+        return unpacked
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bypass Jsoup document, ambil string murni agar super ringan
         val html = app.get(data).text
 
         val tabsBlockMatch = Regex("""class=["'][^"']*muvipro-player-tabs[^"']*["'][^>]*>(.*?)</ul>""", RegexOption.DOT_MATCHES_ALL).find(html)
@@ -110,28 +134,22 @@ class HomeCookingRocks : MainAPI() {
             listOf(data)
         }
 
-        // Prioritaskan link dari halaman ini di urutan pertama (agar tidak perlu GET ulang html-nya)
         val sortedUrls = rawServerUrls.sortedBy { url ->
             if (url == data) 0 else 1
         }
 
-        // Proses Paralel Asinkronus Kecepatan Tinggi!
         coroutineScope {
-            // 👇 PERBAIKAN: Gunakan forEachIndexed untuk mendapatkan nomor urut server
             sortedUrls.forEachIndexed { index, serverUrl ->
                 launch(Dispatchers.IO) {
                     try {
-                        // 1. Ambil HTML (Sertakan referer agar aman dari block server)
                         val serverHtml = if (serverUrl == data) html else app.get(serverUrl, referer = data).text
                         
-                        // 2. REGEX SAPU BERSIH: Kebal huruf besar/kecil & kebal baris baru (newline)!
                         val iframeRegex = Regex(
                             """<iframe[^>]+src=["']([^"']+)["']""", 
                             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL) 
                         )
                         val allIframes = iframeRegex.findAll(serverHtml).map { it.groupValues[1] }.toList()
 
-                        // 3. Filter pintar: Prioritaskan iframe yang mengandung kata kunci server kita
                         var iframeSrc = allIframes.firstOrNull { src ->
                             src.contains("pyrox", ignoreCase = true) || 
                             src.contains("4meplayer", ignoreCase = true) || 
@@ -139,13 +157,10 @@ class HomeCookingRocks : MainAPI() {
                         } ?: allIframes.firstOrNull()
 
                         if (iframeSrc != null) {
-                            
-                            // 👇 PERBAIKAN: Pastikan link iframe menggunakan protokol lengkap (https:)
                             if (iframeSrc.startsWith("//")) {
                                 iframeSrc = "https:$iframeSrc"
                             }
                             
-                            // Penamaan dinamis untuk ExtractorLink
                             val serverName = "Server ${index + 1}"
 
                             // ==========================================
@@ -175,10 +190,7 @@ class HomeCookingRocks : MainAPI() {
                                         ) {
                                             this.referer = iframeSrc
                                             this.quality = Qualities.Unknown.value
-                                            this.headers = mapOf(
-                                                "Origin" to "https://$host",
-                                                "Accept" to "*/*"
-                                            )
+                                            this.headers = mapOf("Origin" to "https://$host", "Accept" to "*/*")
                                         }
                                     )
                                 }
@@ -190,12 +202,9 @@ class HomeCookingRocks : MainAPI() {
                                 val videoId = iframeSrc.substringAfterLast("#")
                                 if (videoId.isNotEmpty() && videoId != iframeSrc) {
                                     val host = java.net.URI(iframeSrc).host
-                                    
-                                    // 👇 PERBAIKAN: Parameter API baru dengan referer dan resolusi
                                     val apiUrl = "https://$host/api/v1/video?id=$videoId&w=360&h=800&r=$serverUrl"
                                         
                                     try {
-                                        // 👇 PERBAIKAN: Menyisipkan User-Agent Android
                                         val hexResponse = app.get(
                                             apiUrl, 
                                             referer = iframeSrc,
@@ -213,22 +222,18 @@ class HomeCookingRocks : MainAPI() {
                                             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
                                             val secretKeySpec = SecretKeySpec(secretKey, "AES")
                                             val ivParameterSpec = IvParameterSpec(ivBytes)
-                                            
                                             cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, ivParameterSpec)
                                             
                                             val decodedHex = hexResponse.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                                             val decryptedBytes = cipher.doFinal(decodedHex)
                                             val decryptedText = String(decryptedBytes, Charsets.UTF_8)
                                             
-                                            // 👇 PERBAIKAN: Regex baru agar dapat menagkap single & double quote
                                             val m3u8Regex = """["']([^"']+\.m3u8[^"']*)["']""".toRegex()
                                             val match = m3u8Regex.find(decryptedText)
                                             
                                             if (match != null) {
                                                 var m3u8Url = match.groupValues[1].replace("\\/", "/")
-                                                if (m3u8Url.startsWith("/")) {
-                                                    m3u8Url = "https://$host$m3u8Url"
-                                                }
+                                                if (m3u8Url.startsWith("/")) m3u8Url = "https://$host$m3u8Url"
                                                 
                                                 callback.invoke(
                                                     newExtractorLink(
@@ -243,27 +248,28 @@ class HomeCookingRocks : MainAPI() {
                                                 )
                                             }
                                         }
-                                    } catch (e: Exception) {
-                                        // Abaikan error pada endpoint ini
-                                    }
+                                    } catch (e: Exception) {}
                                 }
                             }
                             // ==========================================
-                            // SERVER: ImaxStreams (Bypass Packed JS Terupdate)
+                            // SERVER: ImaxStreams (Relative Link Fix)
                             // ==========================================
                             else if (iframeSrc.contains("imaxstreams", ignoreCase = true)) {
-                                // Tambahkan Referer agar tidak di-block oleh server
                                 val iframeHtml = app.get(iframeSrc, referer = serverUrl).text
+                                val unpackedText = multiUnpack(iframeHtml)
                                 
-                                // Bongkar JS Packer (eval(function...))
-                                val unpackedText = getAndUnpack(iframeHtml)
-                                
-                                // 👇 PERBAIKAN: Regex baru yang mewajibkan struktur URL lengkap (http/https)
-                                val m3u8Regex = """["'](https?://[^"']+\.m3u8[^"']*)["']""".toRegex()
+                                // 👇 PERBAIKAN FINAL: Regex yang mengizinkan URL relatif (tanpa https)
+                                val m3u8Regex = """["']([^"']*\.m3u8[^"']*)["']""".toRegex(RegexOption.IGNORE_CASE)
                                 val match = m3u8Regex.find(unpackedText) ?: m3u8Regex.find(iframeHtml)
                                 
                                 if (match != null) {
-                                    val m3u8Url = match.groupValues[1].replace("\\/", "/")
+                                    var m3u8Url = match.groupValues[1].replace("\\/", "/")
+                                    
+                                    // Jika link diawali /, gabungkan dengan nama host imaxstreams
+                                    if (m3u8Url.startsWith("/")) {
+                                        val host = java.net.URI(iframeSrc).host
+                                        m3u8Url = "https://$host$m3u8Url"
+                                    }
                                     
                                     callback.invoke(
                                         newExtractorLink(
