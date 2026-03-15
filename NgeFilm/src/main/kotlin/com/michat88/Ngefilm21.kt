@@ -140,63 +140,83 @@ class Ngefilm21 : MainAPI() {
         val playerLinks = document.select(".muvipro-player-tabs a").mapNotNull { it.attr("href") }.toMutableList()
         if (playerLinks.isEmpty()) playerLinks.add(data)
 
-        coroutineScope {
-            playerLinks.distinct().mapIndexed { index, playerUrl ->
-                async {
-                    try {
-                        val fixedUrl = if (playerUrl.startsWith("http")) playerUrl else "$mainUrl$playerUrl"
-                        val pageContent = app.get(fixedUrl, headers = mapOf("User-Agent" to UA_BROWSER)).text 
-                        var handled = false
+        // EKSEKUSI BERURUTAN (Sequential: Tanpa coroutineScope & async)
+        for (playerUrl in playerLinks.distinct()) {
+            try {
+                val fixedUrl = if (playerUrl.startsWith("http")) playerUrl else "$mainUrl$playerUrl"
+                val pageContent = app.get(fixedUrl, headers = mapOf("User-Agent" to UA_BROWSER)).text 
+                var handled = false
 
-                        // [1] UNIVERSAL RPM LIVE & P2PPLAY (SERVER 1 & 5)
-                        Regex("""(?i)src=["'](https?://([^/]+(?:rpmlive\.online|p2pplay\.pro)).*?(?:id=|/v/|/e/|#)([a-zA-Z0-9_-]+)[^"']*)["']""").findAll(pageContent).forEach {
-                            handled = true
-                            extractRpm(it.groupValues[3], it.groupValues[2], callback)
-                        }
-
-                        // [2] UNIVERSAL XVIDEOSHARING / CLONE IMAXSTREAMS (SERVER 3 & 4)
-                        Regex("""(?i)(?:src|href)\s*=\s*["'](https://[^"']*/(?:e|embed)/[a-zA-Z0-9_-]+)["']""").findAll(pageContent).forEach {
-                            val targetUrl = it.groupValues[1]
-                            // Ditambahkan deteksi hanerix sesuai hasil debug kita
-                            if (targetUrl.contains(Regex("""(?i)hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix"""))) {
-                                handled = true
-                                val isEmbed = targetUrl.contains("/embed/")
-                                val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
-                                val domain = java.net.URI(targetUrl).host
-                                val directUrl = "https://$domain/${if (isEmbed) "embed" else "e"}/$videoId"
-                                
-                                extractXVideoSharing(directUrl, domain, videoId, callback)
-                            }
-                        }
-
-                        // [3] KRAKENFILES
-                        Regex("""(?i)src=["'](https://krakenfiles\.com/embed-video/[^"']+)["']""").findAll(pageContent).forEach { 
-                            handled = true
-                            extractKrakenManual(it.groupValues[1], callback) 
-                        }
-
-                        // [4] XSHOTCOK / HXFILE / SHORT.ICU
-                        Regex("""(?i)src=["'](https://[^"']*(?:xshotcok|hxfile|short\.icu|mixdrop|newer\.stream)[^"']*)["']""").findAll(pageContent).forEach { 
-                            handled = true
-                            val url = it.groupValues[1]
-                            if (url.contains("short.icu")) {
-                                val id = url.substringAfterLast("/").substringBefore("?")
-                                loadExtractor("https://abyss.to/?v=$id", subtitleCallback, callback)
-                            } else {
-                                loadExtractor(url, subtitleCallback, callback)
-                            }
-                        }
-
-                        // [5] FALLBACK JIKA TIDAK ADA YANG COCOK
-                        if (!handled) {
-                            val iframeMatch = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(pageContent)
-                            if (iframeMatch != null) {
-                                loadExtractor(iframeMatch.groupValues[1], subtitleCallback, callback)
-                            }
-                        }
-                    } catch (e: Exception) { e.printStackTrace() }
+                // [1] PRIORITAS UTAMA: DETEKSI LANGSUNG IFRAME HANERIX / HGCLOUD / VIBUXER
+                val hanerixMatch = Regex("""(?i)<iframe[^>]+src=["'](https://[^"']+(?:hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix)[^"']*)["']""").find(pageContent)?.groupValues?.get(1)
+                
+                if (hanerixMatch != null) {
+                    handled = true
+                    val targetUrl = hanerixMatch
+                    val isEmbed = targetUrl.contains("/embed/")
+                    val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
+                    val domain = java.net.URI(targetUrl).host
+                    val directUrl = "https://$domain/${if (isEmbed) "embed" else "e"}/$videoId"
+                    
+                    extractXVideoSharing(directUrl, domain, videoId, callback)
                 }
-            }.awaitAll()
+
+                // [2] PENCARIAN REGEX XVIDEOSHARING LAINNYA JIKA BELUM KETEMU
+                if (!handled) {
+                    Regex("""(?i)(?:src|href)\s*=\s*["'](https://[^"']*/(?:e|embed)/[a-zA-Z0-9_-]+)["']""").findAll(pageContent).forEach {
+                        val targetUrl = it.groupValues[1]
+                        if (targetUrl.contains(Regex("""(?i)hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix"""))) {
+                            handled = true
+                            val isEmbed = targetUrl.contains("/embed/")
+                            val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
+                            val domain = java.net.URI(targetUrl).host
+                            val directUrl = "https://$domain/${if (isEmbed) "embed" else "e"}/$videoId"
+                            
+                            extractXVideoSharing(directUrl, domain, videoId, callback)
+                        }
+                    }
+                }
+
+                // [3] UNIVERSAL RPM LIVE & P2PPLAY
+                if (!handled) {
+                    Regex("""(?i)src=["'](https?://([^/]+(?:rpmlive\.online|p2pplay\.pro)).*?(?:id=|/v/|/e/|#)([a-zA-Z0-9_-]+)[^"']*)["']""").findAll(pageContent).forEach {
+                        handled = true
+                        extractRpm(it.groupValues[3], it.groupValues[2], callback)
+                    }
+                }
+
+                // [4] KRAKENFILES
+                if (!handled) {
+                    Regex("""(?i)src=["'](https://krakenfiles\.com/embed-video/[^"']+)["']""").findAll(pageContent).forEach { 
+                        handled = true
+                        extractKrakenManual(it.groupValues[1], callback) 
+                    }
+                }
+
+                // [5] XSHOTCOK / HXFILE / SHORT.ICU
+                if (!handled) {
+                    Regex("""(?i)src=["'](https://[^"']*(?:xshotcok|hxfile|short\.icu|mixdrop|newer\.stream)[^"']*)["']""").findAll(pageContent).forEach { 
+                        handled = true
+                        val url = it.groupValues[1]
+                        if (url.contains("short.icu")) {
+                            val id = url.substringAfterLast("/").substringBefore("?")
+                            loadExtractor("https://abyss.to/?v=$id", subtitleCallback, callback)
+                        } else {
+                            loadExtractor(url, subtitleCallback, callback)
+                        }
+                    }
+                }
+
+                // [6] FALLBACK JIKA TIDAK ADA YANG COCOK
+                if (!handled) {
+                    val iframeMatch = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(pageContent)
+                    if (iframeMatch != null) {
+                        loadExtractor(iframeMatch.groupValues[1], subtitleCallback, callback)
+                    }
+                }
+            } catch (e: Exception) { 
+                e.printStackTrace() 
+            }
         }
         return true
     }
