@@ -154,6 +154,16 @@ class Ngefilm21 : MainAPI() {
                         
                         extractHanerix(directUrl, realDomain, callback)
                     }
+                    // [1.5] DETEKSI CALLISTANISE & MOVEARNPRE (Backup Server Baru)
+                    else if (targetUrl.contains(Regex("""(?i)callistanise|movearnpre"""))) {
+                        val isEmbed = targetUrl.contains("/embed/")
+                        val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
+                        
+                        val realDomain = "callistanise.com"
+                        val directUrl = "https://$realDomain/${if (isEmbed) "embed" else "e"}/$videoId"
+                        
+                        extractHanerix(directUrl, realDomain, callback)
+                    }
                 }
 
                 // [2] DETEKSI RPM LIVE & P2PPLAY
@@ -277,7 +287,8 @@ class Ngefilm21 : MainAPI() {
                 val k = match.groupValues[4].split("|")
                 fun toBase(num: Int, base: Int): String {
                     val chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                    var res = ""; var n = num; if (n == 0) return "0"
+                    var res = ""; var n = num;
+                    if (n == 0) return "0"
                     while (n > 0) { res = chars[n % base] + res; n /= base }
                     return res
                 }
