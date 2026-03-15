@@ -157,8 +157,8 @@ class Ngefilm21 : MainAPI() {
                         // [2] UNIVERSAL XVIDEOSHARING / CLONE IMAXSTREAMS (SERVER 3 & 4)
                         Regex("""(?i)(?:src|href)\s*=\s*["'](https://[^"']*/(?:e|embed)/[a-zA-Z0-9_-]+)["']""").findAll(pageContent).forEach {
                             val targetUrl = it.groupValues[1]
-                            // Ditambahkan deteksi "hgcloud" dan domain dinamis
-                            if (targetUrl.contains(Regex("""(?i)hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud"""))) {
+                            // Ditambahkan deteksi hanerix sesuai hasil debug kita
+                            if (targetUrl.contains(Regex("""(?i)hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix"""))) {
                                 handled = true
                                 val isEmbed = targetUrl.contains("/embed/")
                                 val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
@@ -183,7 +183,6 @@ class Ngefilm21 : MainAPI() {
                                 val id = url.substringAfterLast("/").substringBefore("?")
                                 loadExtractor("https://abyss.to/?v=$id", subtitleCallback, callback)
                             } else {
-                                // Ekstraktor Xshotcok diserahkan ke sistem universal Cloudstream
                                 loadExtractor(url, subtitleCallback, callback)
                             }
                         }
@@ -202,55 +201,73 @@ class Ngefilm21 : MainAPI() {
         return true
     }
 
-    // --- UNIVERSAL XVIDEOSHARING LOGIC (API AJAX BYPASS) ---
+    // --- UNIVERSAL XVIDEOSHARING LOGIC (UPDATED & SIMPLIFIED) ---
     private suspend fun extractXVideoSharing(url: String, domain: String, videoId: String, callback: (ExtractorLink) -> Unit) {
         try {
-            val response = app.get(url, headers = mapOf(
+            var currentUrl = url
+            var currentDomain = domain
+            
+            // 1. Kunjungi URL Awal (Contoh: hgcloud.to)
+            var response = app.get(currentUrl, headers = mapOf(
                 "User-Agent" to UA_BROWSER,
                 "Referer" to mainUrl, 
-                "Origin" to "https://$domain",
+                "Origin" to "https://$currentDomain",
                 "Upgrade-Insecure-Requests" to "1"
             ))
-            val doc = response.text
-            val cookies = response.cookies
+            var doc = response.text
             
-            val unpackedJs = multiUnpack(doc)
-            var linkM3u8 = Regex("""["']([^"']+\.m3u8[^"']*)["']""").find(unpackedJs)?.groupValues?.get(1)
-
-            if (linkM3u8 == null) {
-                val hashStr = Regex("""(?:hash|'hash'|"hash"|name="hash")\s*[:=]\s*["']([^"']+)["']""").find(unpackedJs)?.groupValues?.get(1)
-                if (hashStr != null) {
-                    val apiUrl = "https://$domain/dl?op=view&file_code=$videoId&hash=$hashStr&embed=1&referer=$domain"
-                    val apiRes = app.get(apiUrl, headers = mapOf(
-                        "User-Agent" to UA_BROWSER,
-                        "Referer" to url,
-                        "X-Requested-With" to "XMLHttpRequest"
-                    ), cookies = cookies).text 
-                    linkM3u8 = Regex("""["']([^"']+\.m3u8[^"']*)["']""").find(apiRes)?.groupValues?.get(1)
-                }
+            // 2. Cek Iframe Redirect (Jika bersembunyi di balik cangkang seperti vibuxer / hanerix)
+            val hiddenIframe = Regex("""(?i)<iframe[^>]+src=["']([^"']+(?:vibuxer|hanerix|hgcloud)[^"']+)["']""").find(doc)?.groupValues?.get(1)
+            if (hiddenIframe != null) {
+                currentUrl = hiddenIframe
+                currentDomain = java.net.URI(currentUrl).host
+                
+                // Kunjungi Iframe Aslinya
+                response = app.get(currentUrl, headers = mapOf(
+                    "User-Agent" to UA_BROWSER,
+                    "Referer" to url
+                ))
+                doc = response.text
             }
 
+            // 3. Bongkar JavaScript yang diacak
+            val unpackedJs = multiUnpack(doc)
+            var linkM3u8: String? = null
+
+            // 4. PANEN M3U8! Langsung dari objek "links" (Mencari hls4, hls3, atau hls2)
+            val hlsMatch = Regex("""["'](?:hls[234])["']\s*:\s*["']([^"']+)["']""").find(unpackedJs)
+            if (hlsMatch != null) {
+                linkM3u8 = hlsMatch.groupValues[1].replace("\\/", "/")
+            }
+
+            // Fallback (Jika M3U8 ditulis langsung tanpa objek links)
+            if (linkM3u8 == null) {
+                linkM3u8 = Regex("""["']([^"']+\.m3u8[^"']*)["']""").find(unpackedJs)?.groupValues?.get(1)
+            }
+
+            // 5. Eksekusi Callback untuk diserahkan ke Cloudstream
             if (linkM3u8 != null) {
-                var m3u8Asli = linkM3u8.replace("\\/", "/")
-                if (m3u8Asli.startsWith("/")) m3u8Asli = "https://$domain$m3u8Asli"
-                
-                val serverName = domain.split(".").first().replaceFirstChar { it.uppercase() }
+                if (linkM3u8.startsWith("/")) linkM3u8 = "https://$currentDomain$linkM3u8"
+                 
+                val serverName = currentDomain.split(".").first().replaceFirstChar { it.uppercase() }
                 callback.invoke(
                     newExtractorLink(
                         serverName,
                         "$serverName (Server)",
-                        m3u8Asli,
+                        linkM3u8,
                         ExtractorLinkType.M3U8
                     ) {
                         this.headers = mapOf(
                             "User-Agent" to UA_BROWSER,
-                            "Referer" to "https://$domain/",
-                            "Origin" to "https://$domain"
+                            "Referer" to "https://$currentDomain/",
+                            "Origin" to "https://$currentDomain"
                         )
                     }
                 )
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     // --- UNIVERSAL RPM & P2PPLAY (AES DECRYPTION) ---
@@ -280,7 +297,10 @@ class Ngefilm21 : MainAPI() {
             val text = app.get(url, headers = mapOf("User-Agent" to UA_BROWSER, "Referer" to mainUrl)).text
             val videoUrl = Regex("""<source[^>]+src=["'](https:[^"']+)["']""").find(text)?.groupValues?.get(1) ?: Regex("""src=["'](https:[^"']+/play/video/[^"']+)["']""").find(text)?.groupValues?.get(1)
             videoUrl?.let { clean ->
-                callback.invoke(newExtractorLink("Krakenfiles", "Krakenfiles", clean.replace("&amp;", "&").replace("\\", ""), ExtractorLinkType.VIDEO) { this.referer = url; this.headers = mapOf("User-Agent" to UA_BROWSER) })
+                callback.invoke(newExtractorLink("Krakenfiles", "Krakenfiles", clean.replace("&amp;", "&").replace("\\", ""), ExtractorLinkType.VIDEO) { 
+                    this.referer = url
+                    this.headers = mapOf("User-Agent" to UA_BROWSER) 
+                })
             }
         } catch (e: Exception) {}
     }
