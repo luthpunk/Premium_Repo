@@ -135,39 +135,23 @@ class Ngefilm21 : MainAPI() {
         val playerLinks = document.select(".muvipro-player-tabs a").mapNotNull { it.attr("href") }.toMutableList()
         if (playerLinks.isEmpty()) playerLinks.add(data)
 
-        // HANYA FOKUS KE SERVER HANERIX / VIBUXER / HGCLOUD
+        // HANYA MENCARI HANERIX / HGCLOUD / VIBUXER (SECARA BERURUTAN)
         for (playerUrl in playerLinks.distinct()) {
             try {
                 val fixedUrl = if (playerUrl.startsWith("http")) playerUrl else "$mainUrl$playerUrl"
                 val pageContent = app.get(fixedUrl, headers = mapOf("User-Agent" to UA_BROWSER)).text 
-                var handled = false
-
-                // 1. Cek di dalam Iframe
-                val hanerixIframe = Regex("""(?i)<iframe[^>]+src=["'](https://[^"']+(?:hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix)[^"']*)["']""").find(pageContent)?.groupValues?.get(1)
                 
-                if (hanerixIframe != null) {
-                    handled = true
-                    val isEmbed = hanerixIframe.contains("/embed/")
-                    val videoId = hanerixIframe.split("/e/", "/embed/").last().substringBefore("?").trim('/')
-                    val domain = java.net.URI(hanerixIframe).host
+                // REGEX SAKTI: Tangkap src iframe atau link langsung
+                val hanerixRegex = Regex("""(?i)(?:src|href)=["'](https://[^"']+(?:hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix)[^"']*)["']""").find(pageContent)?.groupValues?.get(1)
+                
+                if (hanerixRegex != null) {
+                    val targetUrl = hanerixRegex
+                    val isEmbed = targetUrl.contains("/embed/")
+                    val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
+                    val domain = java.net.URI(targetUrl).host
                     val directUrl = "https://$domain/${if (isEmbed) "embed" else "e"}/$videoId"
                     
-                    extractXVideoSharing(directUrl, domain, videoId, callback)
-                }
-
-                // 2. Cek di src/href biasa (Jika tidak pakai Iframe)
-                if (!handled) {
-                    Regex("""(?i)(?:src|href)\s*=\s*["'](https://[^"']*/(?:e|embed)/[a-zA-Z0-9_-]+)["']""").findAll(pageContent).forEach {
-                        val targetUrl = it.groupValues[1]
-                        if (targetUrl.contains(Regex("""(?i)hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix"""))) {
-                            val isEmbed = targetUrl.contains("/embed/")
-                            val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
-                            val domain = java.net.URI(targetUrl).host
-                            val directUrl = "https://$domain/${if (isEmbed) "embed" else "e"}/$videoId"
-                            
-                            extractXVideoSharing(directUrl, domain, videoId, callback)
-                        }
-                    }
+                    extractHanerix(directUrl, domain, callback)
                 }
             } catch (e: Exception) { 
                 e.printStackTrace() 
@@ -176,8 +160,8 @@ class Ngefilm21 : MainAPI() {
         return true
     }
 
-    // --- LOGIKA EKSTRAKSI HANERIX (FINAL) ---
-    private suspend fun extractXVideoSharing(url: String, domain: String, videoId: String, callback: (ExtractorLink) -> Unit) {
+    // --- LOGIKA EKSTRAKSI HANERIX KHUSUS ---
+    private suspend fun extractHanerix(url: String, domain: String, callback: (ExtractorLink) -> Unit) {
         try {
             var currentUrl = url
             var currentDomain = domain
@@ -191,8 +175,8 @@ class Ngefilm21 : MainAPI() {
             ))
             var doc = response.text
             
-            // 2. Cek Iframe Redirect (Bypass hgcloud -> hanerix)
-            val hiddenIframe = Regex("""(?i)<iframe[^>]+src=["']([^"']+(?:vibuxer|hanerix|hgcloud)[^"']+)["']""").find(doc)?.groupValues?.get(1)
+            // 2. Cek Iframe Redirect (Bypass hgcloud -> hanerix/vibuxer)
+            val hiddenIframe = Regex("""(?i)<iframe[^>]+src=["']([^"']+(?:vibuxer|hanerix)[^"']+)["']""").find(doc)?.groupValues?.get(1)
             if (hiddenIframe != null) {
                 currentUrl = hiddenIframe
                 currentDomain = java.net.URI(currentUrl).host
@@ -206,28 +190,23 @@ class Ngefilm21 : MainAPI() {
 
             // 3. Bongkar JavaScript
             val unpackedJs = multiUnpack(doc)
-            var linkM3u8: String? = null
-
-            // 4. PANEN M3U8 (hls4, hls3, hls2)
-            val hlsMatch = Regex("""["'](?:hls[234])["']\s*:\s*["']([^"']+)["']""").find(unpackedJs)
-            if (hlsMatch != null) {
-                linkM3u8 = hlsMatch.groupValues[1].replace("\\/", "/")
-            }
-
-            // Fallback M3U8
+            
+            // 4. PANEN M3U8 DENGAN REGEX
+            var linkM3u8 = Regex("""["'](?:hls[234])["']\s*:\s*["']([^"']+)["']""").find(unpackedJs)?.groupValues?.get(1)
+            
             if (linkM3u8 == null) {
                 linkM3u8 = Regex("""["']([^"']+\.m3u8[^"']*)["']""").find(unpackedJs)?.groupValues?.get(1)
             }
 
             // 5. Kirim Link ke Cloudstream
             if (linkM3u8 != null) {
+                linkM3u8 = linkM3u8.replace("\\/", "/")
                 if (linkM3u8.startsWith("/")) linkM3u8 = "https://$currentDomain$linkM3u8"
                  
-                val serverName = "Hanerix Server"
                 callback.invoke(
                     newExtractorLink(
-                        serverName,
-                        serverName,
+                        "Hanerix Server",
+                        "Hanerix Server",
                         linkM3u8,
                         ExtractorLinkType.M3U8
                     ) {
