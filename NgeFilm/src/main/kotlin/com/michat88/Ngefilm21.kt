@@ -3,18 +3,15 @@ package com.michat88
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
 class Ngefilm21 : MainAPI() {
-    override var mainUrl = "https://new32.ngefilm.site" // DOMAIN TERBARU
+    override var mainUrl = "https://new32.ngefilm.site" 
     override var name = "Ngefilm21"
     override val hasMainPage = true
     override var lang = "id"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.AsianDrama)
 
-    // --- CONFIG ---
     private val UA_BROWSER = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 
     private fun Element.getImageAttr(): String? {
@@ -41,25 +38,23 @@ class Ngefilm21 : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val homeItems = coroutineScope {
-            categories.map { (title, urlPath) ->
-                async {
-                    val finalUrl = if (urlPath.isEmpty()) {
-                        "$mainUrl/page/$page/"
-                    } else if (urlPath.contains("?")) {
-                        val split = urlPath.split("?")
-                        "$mainUrl/page/$page/?${split[1]}"
-                    } else {
-                        "$mainUrl$urlPath/page/$page/"
-                    }
+        val homeItems = mutableListOf<HomePageList>()
+        for (cat in categories) {
+            val (title, urlPath) = cat
+            val finalUrl = if (urlPath.isEmpty()) {
+                "$mainUrl/page/$page/"
+            } else if (urlPath.contains("?")) {
+                val split = urlPath.split("?")
+                "$mainUrl/page/$page/?${split[1]}"
+            } else {
+                "$mainUrl$urlPath/page/$page/"
+            }
 
-                    try {
-                        val document = app.get(finalUrl).document
-                        val items = document.select("article.item-infinite").mapNotNull { it.toSearchResult() }
-                        if (items.isNotEmpty()) HomePageList(title, items) else null
-                    } catch (e: Exception) { null }
-                }
-            }.awaitAll().filterNotNull()
+            try {
+                val document = app.get(finalUrl).document
+                val items = document.select("article.item-infinite").mapNotNull { it.toSearchResult() }
+                if (items.isNotEmpty()) homeItems.add(HomePageList(title, items))
+            } catch (e: Exception) { }
         }
         return newHomePageResponse(homeItems, hasNext = true)
     }
@@ -135,95 +130,75 @@ class Ngefilm21 : MainAPI() {
         val playerLinks = document.select(".muvipro-player-tabs a").mapNotNull { it.attr("href") }.toMutableList()
         if (playerLinks.isEmpty()) playerLinks.add(data)
 
-        // HANYA MENCARI HANERIX / HGCLOUD / VIBUXER (SECARA BERURUTAN)
+        // PROSES BERURUTAN (Sequential)
         for (playerUrl in playerLinks.distinct()) {
             try {
                 val fixedUrl = if (playerUrl.startsWith("http")) playerUrl else "$mainUrl$playerUrl"
                 val pageContent = app.get(fixedUrl, headers = mapOf("User-Agent" to UA_BROWSER)).text 
                 
-                // REGEX SAKTI: Tangkap src iframe atau link langsung
-                val hanerixRegex = Regex("""(?i)(?:src|href)=["'](https://[^"']+(?:hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix)[^"']*)["']""").find(pageContent)?.groupValues?.get(1)
+                // Cari semua link HTTPS di halaman
+                val allLinks = Regex("""(?i)(?:src|href)=["'](https?://[^"']+)["']""").findAll(pageContent).map { it.groupValues[1] }.toList()
                 
-                if (hanerixRegex != null) {
-                    val targetUrl = hanerixRegex
-                    val isEmbed = targetUrl.contains("/embed/")
-                    val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
-                    val domain = java.net.URI(targetUrl).host
-                    val directUrl = "https://$domain/${if (isEmbed) "embed" else "e"}/$videoId"
-                    
-                    extractHanerix(directUrl, domain, callback)
+                for (targetUrl in allLinks) {
+                    // JIKA MENEMUKAN KELUARGA HANERIX / HGCLOUD
+                    if (targetUrl.contains(Regex("""(?i)hglink|vibuxer|masukestin|cybervynx|niramirus|smoothpre|hgcloud|hanerix"""))) {
+                        val isEmbed = targetUrl.contains("/embed/")
+                        val videoId = targetUrl.split("/e/", "/embed/").last().substringBefore("?").trim('/')
+                        
+                        // --- TRIK JALAN PINTAS: PAKSA GANTI KE HANERIX.COM ---
+                        val realDomain = "hanerix.com"
+                        val directUrl = "https://$realDomain/${if (isEmbed) "embed" else "e"}/$videoId"
+                        
+                        extractHanerix(directUrl, realDomain, callback)
+                    }
                 }
-            } catch (e: Exception) { 
-                e.printStackTrace() 
-            }
+            } catch (e: Exception) { }
         }
         return true
     }
 
-    // --- LOGIKA EKSTRAKSI HANERIX KHUSUS ---
     private suspend fun extractHanerix(url: String, domain: String, callback: (ExtractorLink) -> Unit) {
         try {
-            var currentUrl = url
-            var currentDomain = domain
-            
-            // 1. Kunjungi URL target
-            var response = app.get(currentUrl, headers = mapOf(
+            // Langsung ambil konten dari hanerix.com
+            val response = app.get(url, headers = mapOf(
                 "User-Agent" to UA_BROWSER,
                 "Referer" to mainUrl, 
-                "Origin" to "https://$currentDomain",
+                "Origin" to "https://$domain",
                 "Upgrade-Insecure-Requests" to "1"
             ))
-            var doc = response.text
             
-            // 2. Cek Iframe Redirect (Bypass hgcloud -> hanerix/vibuxer)
-            val hiddenIframe = Regex("""(?i)<iframe[^>]+src=["']([^"']+(?:vibuxer|hanerix)[^"']+)["']""").find(doc)?.groupValues?.get(1)
-            if (hiddenIframe != null) {
-                currentUrl = hiddenIframe
-                currentDomain = java.net.URI(currentUrl).host
-                
-                response = app.get(currentUrl, headers = mapOf(
-                    "User-Agent" to UA_BROWSER,
-                    "Referer" to url
-                ))
-                doc = response.text
-            }
-
-            // 3. Bongkar JavaScript
-            val unpackedJs = multiUnpack(doc)
+            val unpackedJs = multiUnpack(response.text)
             
-            // 4. PANEN M3U8 DENGAN REGEX
+            // PANEN M3U8 (Cari hls4, hls3, atau hls2)
             var linkM3u8 = Regex("""["'](?:hls[234])["']\s*:\s*["']([^"']+)["']""").find(unpackedJs)?.groupValues?.get(1)
             
+            // Fallback cari .m3u8 manual
             if (linkM3u8 == null) {
                 linkM3u8 = Regex("""["']([^"']+\.m3u8[^"']*)["']""").find(unpackedJs)?.groupValues?.get(1)
             }
 
-            // 5. Kirim Link ke Cloudstream
             if (linkM3u8 != null) {
-                linkM3u8 = linkM3u8.replace("\\/", "/")
-                if (linkM3u8.startsWith("/")) linkM3u8 = "https://$currentDomain$linkM3u8"
+                var finalM3u8 = linkM3u8.replace("\\/", "/")
+                if (finalM3u8.startsWith("/")) finalM3u8 = "https://$domain$finalM3u8"
                  
                 callback.invoke(
                     newExtractorLink(
                         "Hanerix Server",
                         "Hanerix Server",
-                        linkM3u8,
+                        finalM3u8,
                         ExtractorLinkType.M3U8
                     ) {
                         this.headers = mapOf(
                             "User-Agent" to UA_BROWSER,
-                            "Referer" to "https://$currentDomain/",
-                            "Origin" to "https://$currentDomain"
+                            "Referer" to "https://$domain/",
+                            "Origin" to "https://$domain"
                         )
                     }
                 )
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) { }
     }
 
-    // --- MULTI JAVASCRIPT UNPACKER ---
     private fun multiUnpack(html: String): String {
         var unpacked = html
         try {
