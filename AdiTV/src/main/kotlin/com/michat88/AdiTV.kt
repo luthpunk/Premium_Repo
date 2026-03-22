@@ -63,9 +63,7 @@ class AdiTV : MainAPI() {
                     }
                 }
 
-                if (cleanUrl.startsWith("http://")) {
-                    cleanUrl = cleanUrl.replace("http://", "https://")
-                }
+                // DIHAPUS: Logika pemaksaan HTTPS (cleanUrl.replace) agar IP Address bisa diputar
 
                 val finalUrlToPass = if (currentHeaders.isNotEmpty()) {
                     cleanUrl + "|" + currentHeaders.map { "${it.key}=${it.value}" }.joinToString("&")
@@ -77,7 +75,6 @@ class AdiTV : MainAPI() {
                     groupedChannels[currentGroup] = mutableListOf()
                 }
                 
-                // MENGGUNAKAN ATURAN BARU UNTUK UI
                 groupedChannels[currentGroup]?.add(
                     newLiveSearchResponse(
                         name = currentName,
@@ -87,9 +84,6 @@ class AdiTV : MainAPI() {
                         this.posterUrl = currentLogo
                         this.lang = "id"
                         
-                        // --- TAMBAHAN KODE AJAIB UNTUK UI ---
-                        // 1. Membuat card menjadi Landscape (16:9)
-                        // 2. Memaksa logo tampil utuh (FitCenter) tanpa terpotong
                         this.posterHeaders = mapOf(
                             "Cloudstream-Poster-Shape" to "Landscape",
                             "Cloudstream-Poster-Fit" to "FitCenter"
