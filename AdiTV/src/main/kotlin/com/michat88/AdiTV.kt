@@ -19,65 +19,60 @@ class AdiTV : MainAPI() {
         val m3uData = app.get(mainUrl).text
         val lines = m3uData.lines()
         
-        // Membuat wadah untuk mengelompokkan channel berdasarkan kategori (group-title)
-        val groupedChannels = mutableMapOf<String, MutableList<LiveSearchResponse>>()
+        val groupedChannels = mutableMapOf<String, MutableList<SearchResponse>>()
         
         var currentName = "Channel Tanpa Nama"
         var currentLogo = ""
-        var currentGroup = "Lain-lain" // Kategori default jika tidak ada group-title
+        var currentGroup = "Lain-lain"
         
-        // Membaca file baris demi baris
         for (line in lines) {
             val trimmedLine = line.trim()
             if (trimmedLine.startsWith("#EXTINF")) {
-                // 1. Mengambil nama channel (setelah koma terakhir)
                 currentName = trimmedLine.substringAfterLast(",").trim()
                 
-                // 2. Mengambil logo (tvg-logo)
                 val logoRegex = """tvg-logo="(.*?)"""".toRegex()
                 currentLogo = logoRegex.find(trimmedLine)?.groupValues?.get(1) ?: ""
                 
-                // 3. Mengambil kategori (group-title)
                 val groupRegex = """group-title="(.*?)"""".toRegex()
                 currentGroup = groupRegex.find(trimmedLine)?.groupValues?.get(1) ?: "Lain-lain"
                 
             } else if (trimmedLine.isNotBlank() && !trimmedLine.startsWith("#")) {
-                // Menyiapkan grup jika belum ada
                 if (!groupedChannels.containsKey(currentGroup)) {
                     groupedChannels[currentGroup] = mutableListOf()
                 }
                 
-                // Memasukkan channel ke dalam grup yang sesuai
+                // MENGGUNAKAN ATURAN BARU: newLiveSearchResponse
                 groupedChannels[currentGroup]?.add(
-                    LiveSearchResponse(
+                    newLiveSearchResponse(
                         name = currentName,
                         url = trimmedLine,
-                        apiName = this@AdiTV.name,
-                        type = TvType.Live,
-                        posterUrl = currentLogo,
-                        lang = "id"
-                    )
+                        type = TvType.Live
+                    ) {
+                        this.posterUrl = currentLogo
+                        this.lang = "id"
+                    }
                 )
             }
         }
 
-        // Mengubah Map/Grup tadi menjadi daftar HomePageList yang diminta Cloudstream
         val homePageLists = groupedChannels.map { (groupName, channels) ->
             HomePageList(groupName, channels)
         }
 
-        // Menampilkan hasil di Halaman Utama
-        return HomePageResponse(homePageLists)
+        // MENGGUNAKAN ATURAN BARU: newHomePageResponse
+        return newHomePageResponse(homePageLists)
     }
 
     // Langkah 2: Mengatur data saat channel diklik
     override suspend fun load(url: String): LoadResponse {
-        return LiveStreamLoadResponse(
+        // MENGGUNAKAN ATURAN BARU: newLiveStreamLoadResponse
+        return newLiveStreamLoadResponse(
             name = "Live TV",
             url = url,
-            apiName = this.name,
             dataUrl = url
-        )
+        ) {
+            // Kosongkan atau tambahkan properties lain jika perlu
+        }
     }
 
     // Langkah 3: Menarik link video untuk diputar di Video Player
@@ -87,17 +82,24 @@ class AdiTV : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        
+        // Deteksi tipe ekstensi video
+        val linkType = when {
+            data.contains(".mpd", ignoreCase = true) -> ExtractorLinkType.DASH
+            data.contains(".m3u", ignoreCase = true) -> ExtractorLinkType.M3U8
+            else -> ExtractorLinkType.VIDEO
+        }
+
+        // MENGGUNAKAN ATURAN BARU: newExtractorLink
         callback.invoke(
-            ExtractorLink(
+            newExtractorLink(
                 source = this.name,
                 name = this.name,
                 url = data,
-                referer = "",
-                quality = Qualities.Unknown.value,
-                // Ini bagian yang diperbarui: Mendeteksi M3U8 dan MPD (DASH)
-                isM3u8 = data.contains(".m3u", ignoreCase = true),
-                isDash = data.contains(".mpd", ignoreCase = true) 
-            )
+                type = linkType
+            ) {
+                this.quality = Qualities.Unknown.value
+            }
         )
         return true
     }
