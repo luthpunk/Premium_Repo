@@ -11,7 +11,6 @@ class AdiTV : MainAPI() {
     override val hasChromecastSupport = true
     override val supportedTypes = setOf(TvType.Live)
 
-    // Langkah 1: Mengambil data dan memparsing seperti di React Native
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val m3uData = app.get(mainUrl).text
         val lines = m3uData.lines()
@@ -35,11 +34,9 @@ class AdiTV : MainAPI() {
                 val groupRegex = """group-title="(.*?)"""".toRegex()
                 currentGroup = groupRegex.find(trimmedLine)?.groupValues?.get(1) ?: "Lain-lain"
                 
-                // Reset headers untuk channel baru
                 currentHeaders.clear() 
                 
             } else if (trimmedLine.startsWith("#EXTVLCOPT:")) {
-                // Meniru logika ekstraksi headers VLC dari React Native-mu
                 if (trimmedLine.contains("http-referrer=")) {
                     val referer = trimmedLine.substringAfter("http-referrer=")
                     currentHeaders["Referer"] = referer
@@ -53,12 +50,10 @@ class AdiTV : MainAPI() {
             } else if (trimmedLine.isNotBlank() && !trimmedLine.startsWith("#")) {
                 var cleanUrl = trimmedLine
 
-                // 1. Membersihkan link dari format MX Player (|User-Agent=...)
                 if (cleanUrl.contains("|")) {
                     val parts = cleanUrl.split("|")
                     cleanUrl = parts[0]
                     
-                    // Menangkap header dari MX Player format
                     val headerPart = parts.getOrNull(1) ?: ""
                     headerPart.split("&").forEach { pair ->
                         val kv = pair.split("=")
@@ -68,12 +63,10 @@ class AdiTV : MainAPI() {
                     }
                 }
 
-                // 2. Memaksa HTTPS seperti logika di kodemu
                 if (cleanUrl.startsWith("http://")) {
                     cleanUrl = cleanUrl.replace("http://", "https://")
                 }
 
-                // Kita bungkus URL dan Headers jadi satu string untuk dikirim ke LoadLinks
                 val finalUrlToPass = if (currentHeaders.isNotEmpty()) {
                     cleanUrl + "|" + currentHeaders.map { "${it.key}=${it.value}" }.joinToString("&")
                 } else {
@@ -84,6 +77,7 @@ class AdiTV : MainAPI() {
                     groupedChannels[currentGroup] = mutableListOf()
                 }
                 
+                // MENGGUNAKAN ATURAN BARU UNTUK UI
                 groupedChannels[currentGroup]?.add(
                     newLiveSearchResponse(
                         name = currentName,
@@ -92,6 +86,14 @@ class AdiTV : MainAPI() {
                     ) {
                         this.posterUrl = currentLogo
                         this.lang = "id"
+                        
+                        // --- TAMBAHAN KODE AJAIB UNTUK UI ---
+                        // 1. Membuat card menjadi Landscape (16:9)
+                        // 2. Memaksa logo tampil utuh (FitCenter) tanpa terpotong
+                        this.posterHeaders = mapOf(
+                            "Cloudstream-Poster-Shape" to "Landscape",
+                            "Cloudstream-Poster-Fit" to "FitCenter"
+                        )
                     }
                 )
             }
@@ -112,7 +114,6 @@ class AdiTV : MainAPI() {
         ) {}
     }
 
-    // Langkah 3: Eksekusi link dan header di pemutar video
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -123,7 +124,6 @@ class AdiTV : MainAPI() {
         var cleanUrl = data
         val mapHeaders = mutableMapOf<String, String>()
         
-        // Membongkar kembali URL dan Headers yang kita gabungkan tadi
         if (cleanUrl.contains("|")) {
             val parts = cleanUrl.split("|")
             cleanUrl = parts[0]
@@ -136,7 +136,6 @@ class AdiTV : MainAPI() {
             }
         }
 
-        // Default fallback User-Agent (sama persis dengan yang kau pakai di tester)
         if (!mapHeaders.containsKey("User-Agent")) {
             mapHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
         }
@@ -155,7 +154,7 @@ class AdiTV : MainAPI() {
                 type = linkType
             ) {
                 this.quality = Qualities.Unknown.value
-                this.headers = mapHeaders // Memasukkan headers ke Cloudstream!
+                this.headers = mapHeaders 
             }
         )
         return true
