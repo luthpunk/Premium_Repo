@@ -1,34 +1,30 @@
 package com.michat88
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class AdiTV : MainAPI() {
-    // Info dasar Provider
     override var name = "AdiTV"
-    // Kita gunakan link RAW dari github agar teks m3u bisa dibaca langsung
     override var mainUrl = "https://raw.githubusercontent.com/amanhnb88/AdiTV/main/streams/playlist_aktif.m3u"
     override val hasMainPage = true
     override var lang = "id"
     override val supportedTypes = setOf(TvType.Live)
 
-    // Data class bantuan untuk menyimpan info setiap channel
+    // Data class bantuan sementara
     data class ChannelData(
         val name: String,
-        val logo: String,
+        val logo: String?,
         val group: String,
         val streamUrl: String
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         try {
-            // 1. Mengambil teks M3U dari Github
+            // Ambil text dari github
             val m3uText = app.get(mainUrl).text
             
-            // 2. Memproses teks M3U
             val channels = mutableListOf<ChannelData>()
             val lines = m3uText.lines()
             
@@ -36,43 +32,45 @@ class AdiTV : MainAPI() {
             var currentLogo = ""
             var currentGroup = "Lainnya"
 
+            // Parsing M3U manual
             for (line in lines) {
                 val cleanLine = line.trim()
                 if (cleanLine.startsWith("#EXTINF")) {
-                    // Ekstrak nama grup (group-title="Nama Grup")
                     val groupMatch = Regex("""group-title="([^"]+)"""").find(cleanLine)
                     currentGroup = groupMatch?.groupValues?.get(1) ?: "Lainnya"
 
-                    // Ekstrak logo (tvg-logo="Link Logo")
                     val logoMatch = Regex("""tvg-logo="([^"]+)"""").find(cleanLine)
                     currentLogo = logoMatch?.groupValues?.get(1) ?: ""
 
-                    // Ekstrak nama channel (ada di akhir baris setelah koma)
                     currentName = cleanLine.substringAfterLast(",").trim()
                 } else if (cleanLine.startsWith("http")) {
-                    // Jika baris dimulai dengan http, itu adalah link stream-nya
                     channels.add(ChannelData(currentName, currentLogo, currentGroup, cleanLine))
                 }
             }
 
-            // 3. Mengelompokkan channel berdasarkan Group
+            // Kelompokkan berdasarkan grup
             val groupedChannels = channels.groupBy { it.group }
 
-            // 4. Memasukkan data ke tampilan Homepage Cloudstream
-            val homePageLists = groupedChannels.map { (groupName, channelList) ->
-                val searchResponses = channelList.map { ch ->
-                    LiveSearchResponse(
+            // STANDAR PARCOLLECTIONS.KT: Gunakan amap untuk memproses list secara concurrent/async
+            val homePageLists = groupedChannels.toList().amap { (groupName, channelList) ->
+                
+                // STANDAR MAINAPI.KT: Gunakan amap lagi untuk item di dalamnya
+                val searchResponses = channelList.amap { ch ->
+                    // STANDAR MAINAPI.KT: Gunakan fungsi newLiveSearchResponse, JANGAN panggil constructor LiveSearchResponse langsung
+                    newLiveSearchResponse(
                         name = ch.name,
-                        url = ch.streamUrl, // Kita jadikan stream URL sebagai URL utama
-                        apiName = this.name,
-                        type = TvType.Live,
-                        posterUrl = ch.logo
-                    )
+                        url = ch.streamUrl,
+                        type = TvType.Live
+                    ) {
+                        this.posterUrl = ch.logo // Menggunakan initializer block
+                    }
                 }
+                
                 HomePageList(name = groupName, list = searchResponses)
             }
 
-            return HomePageResponse(homePageLists)
+            // STANDAR MAINAPI.KT: Gunakan newHomePageResponse
+            return newHomePageResponse(homePageLists)
 
         } catch (e: Exception) {
             e.printStackTrace()
@@ -80,41 +78,43 @@ class AdiTV : MainAPI() {
         }
     }
 
-    // Dipanggil saat user mengklik salah satu channel di halaman utama
     override suspend fun load(url: String): LoadResponse {
-        // Cloudstream akan membuat halaman detail, kita langsung oper URL stream-nya
-        return LiveStreamLoadResponse(
+        // STANDAR MAINAPI.KT: Gunakan fungsi newLiveStreamLoadResponse
+        return newLiveStreamLoadResponse(
             name = "Live Stream",
             url = url,
-            apiName = this.name,
             dataUrl = url
-        )
+        ) {
+            this.posterUrl = null
+        }
     }
 
-    // Dipanggil saat user menekan tombol "Play" untuk mengekstrak link video asli
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Cek apakah link berakhiran .m3u8
-        val isM3u8 = data.contains(".m3u8") || data.contains(".m3u")
-        val isDash = data.contains(".mpd")
+        // Cek tipe ekstensi stream
+        val linkType = when {
+            data.contains(".mpd") -> ExtractorLinkType.DASH
+            data.contains(".m3u") -> ExtractorLinkType.M3U8
+            else -> ExtractorLinkType.VIDEO
+        }
 
-        // Mempersiapkan link agar bisa diputar di player
-        callback.invoke(
-            ExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = data,
-                referer = "",
-                quality = Qualities.Unknown.value,
-                type = if (isDash) com.lagradost.cloudstream3.utils.ExtractorLinkType.DASH 
-                       else if (isM3u8) com.lagradost.cloudstream3.utils.ExtractorLinkType.M3U8 
-                       else com.lagradost.cloudstream3.utils.ExtractorLinkType.VIDEO
-            )
-        )
+        // STANDAR EXTRACTORAPI.KT: Gunakan fungsi newExtractorLink, jangan pakai ExtractorLink constructor
+        val extractor = newExtractorLink(
+            source = this.name,
+            name = this.name,
+            url = data,
+            type = linkType
+        ) {
+            this.quality = Qualities.Unknown.value
+            this.referer = "" // Kosongkan atau isi dengan header m3u jika diperlukan
+        }
+        
+        callback.invoke(extractor)
+        
         return true
     }
 }
