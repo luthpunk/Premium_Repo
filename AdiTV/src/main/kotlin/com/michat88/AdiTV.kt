@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 
-// Membuat Kapsul Data agar Logo, Nama, dan Kategori tidak hilang
+// Data Kapsul JSON untuk mempertahankan info Channel
 data class ChannelData(
     val name: String,
     val url: String,
@@ -49,10 +49,8 @@ class AdiTVProvider : MainAPI() {
             } 
             else if (trimmedLine.isNotEmpty() && !trimmedLine.startsWith("#")) {
                 
-                // BUNGKUS DATA KE DALAM JSON
                 val channelDataJSON = ChannelData(currentName, trimmedLine, currentLogo, currentGroup).toJson()
 
-                // Kirim JSON sebagai "URL" ke fungsi selanjutnya
                 val channel = newLiveSearchResponse(currentName, channelDataJSON, TvType.Live) {
                     this.posterUrl = currentLogo
                 }
@@ -76,26 +74,23 @@ class AdiTVProvider : MainAPI() {
     }
 
     /**
-     * Langkah 2: Mengatur UI Halaman Pemutar (Memperbaiki "Plot Tidak Ditemukan")
+     * Langkah 2: Mengatur UI Halaman Pemutar
      */
     override suspend fun load(url: String): LoadResponse {
-        // BUKA BUNGKUSAN JSON
         val data = tryParseJson<ChannelData>(url)
-        
-        // Ambil data dari JSON, jika gagal (bukan JSON), gunakan URL mentahnya
         val streamUrl = data?.url ?: url
         val channelName = data?.name ?: "Live Stream"
         val channelLogo = data?.logo
         val channelGroup = data?.group ?: "Siaran Langsung"
 
         return newLiveStreamLoadResponse(channelName, url, streamUrl) {
-            this.posterUrl = channelLogo // Memunculkan logo di player
-            this.plot = "📺 Menyiarkan: $channelName\n📂 Kategori: $channelGroup\n\nSelamat menonton dari ekstensi AdiTV!" // Memperbaiki plot
+            this.posterUrl = channelLogo 
+            this.plot = "📺 Menyiarkan: $channelName\n📂 Kategori: $channelGroup"
         }
     }
 
     /**
-     * Langkah 3: Mengirim video ke Player menggunakan M3u8Helper (Anti 32x18 & Anti 404)
+     * Langkah 3: HYBRID INJECTOR (Menyuntikkan Multi-Metode ke Player)
      */
     override suspend fun loadLinks(
         data: String,
@@ -104,9 +99,9 @@ class AdiTVProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         
-        // BUKA BUNGKUSAN JSON LAGI UNTUK MENDAPATKAN URL ASLI
         val streamUrl = tryParseJson<ChannelData>(data)?.url ?: data
 
+        // Headers Penyamaran mutlak untuk menembus server
         val customHeaders = mapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
             "Accept" to "*/*",
@@ -114,24 +109,68 @@ class AdiTVProvider : MainAPI() {
         )
 
         if (streamUrl.contains(".m3u8")) {
-            // M3u8Helper akan membuang track 32x18/TrickPlay dan Meneruskan Headers!
-            M3u8Helper.generateM3u8(
-                source = this.name,
-                streamUrl = streamUrl,
-                referer = "",
-                headers = customHeaders
-            ).forEach(callback)
             
-        } else {
-            // Untuk link DASH (.mpd)
+            // ==========================================
+            // JALUR 1: M3U8 HELPER (Membasmi Trick-Play 32x18)
+            // ==========================================
+            try {
+                M3u8Helper.generateM3u8(
+                    source = "Filter", // Nama server
+                    streamUrl = streamUrl,
+                    referer = "",
+                    headers = customHeaders
+                ).forEach { link ->
+                    // Menyaring track sampah (Trick-play 32x18 dll)
+                    if (!link.name.contains("32x18") && !link.name.contains("Trick")) {
+                        callback.invoke(link)
+                    }
+                }
+            } catch (e: Exception) {
+                // Abaikan jika M3u8Helper gagal membedah link (sering terjadi di server ber-token)
+            }
+
+            // ==========================================
+            // JALUR 2: NATIVE EXOPLAYER (Membasmi Error 2004)
+            // ==========================================
+            // Ini akan jadi server cadangan (atau server utama jika Jalur 1 di-lock)
             callback.invoke(
                 newExtractorLink(
-                    source = this.name,
-                    name = this.name,
+                    source = "Native", // Nama Server di Player
+                    name = "Auto (Native Player)",
                     url = streamUrl,
-                    type = if (streamUrl.contains(".mpd")) ExtractorLinkType.DASH else ExtractorLinkType.VIDEO
+                    type = ExtractorLinkType.M3U8
                 ) {
                     this.headers = customHeaders
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+
+        } else if (streamUrl.contains(".mpd")) {
+            // ==========================================
+            // JALUR 3: FORMAT DASH (.MPD)
+            // ==========================================
+            callback.invoke(
+                newExtractorLink(
+                    source = "Native",
+                    name = "DASH Stream",
+                    url = streamUrl,
+                    type = ExtractorLinkType.DASH
+                ) {
+                    this.headers = customHeaders
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+        } else {
+            // JALUR 4: Format Video Lainnya (mp4, mkv, dll)
+            callback.invoke(
+                newExtractorLink(
+                    source = "Native",
+                    name = "Direct Video",
+                    url = streamUrl,
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    this.headers = customHeaders
+                    this.quality = Qualities.Unknown.value
                 }
             )
         }
