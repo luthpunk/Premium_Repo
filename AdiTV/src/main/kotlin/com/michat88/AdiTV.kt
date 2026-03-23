@@ -2,6 +2,7 @@ package com.michat88
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.get
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
 class AdiTVProvider : MainAPI() {
     // Nama plugin yang akan muncul di aplikasi
@@ -17,63 +18,80 @@ class AdiTVProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Live)
 
     /**
-     * Langkah 1: Memuat daftar channel di halaman utama aplikasi
+     * Langkah 1: Memuat dan mengelompokkan daftar channel di Beranda
      */
     override suspend fun getMainPage(page: Int, requestPath: String?): HomePageResponse? {
         // Mengunduh isi teks dari file M3U di Github
         val m3uText = app.get(mainUrl).text
-        val channels = mutableListOf<LiveSearchResponse>()
         
-        // Variabel untuk menyimpan data sementara saat membaca baris
+        // Tempat penyimpanan sementara channel berdasarkan Grup-nya (group-title)
+        val channelsByGroup = mutableMapOf<String, MutableList<LiveSearchResponse>>()
+        
         var currentName = ""
         var currentLogo = ""
+        var currentGroup = "Lainnya" // Kategori default jika tidak ada nama grup
 
         // Membaca file baris demi baris
         val lines = m3uText.split("\n")
         for (line in lines) {
             val trimmedLine = line.trim()
             
-            // Jika baris berisi informasi channel (dimulai dengan #EXTINF)
             if (trimmedLine.startsWith("#EXTINF")) {
-                // Mencari URL logo channel (tvg-logo) menggunakan Regex
+                // Regex untuk mengambil Logo dan Grup dari teks M3U
                 val logoRegex = """tvg-logo="([^"]+)"""".toRegex()
+                val groupRegex = """group-title="([^"]+)"""".toRegex()
+                
                 currentLogo = logoRegex.find(trimmedLine)?.groupValues?.get(1) ?: ""
+                
+                // Cek jika ada group-title, kalau tidak ada biarkan tetap "Lainnya"
+                val foundGroup = groupRegex.find(trimmedLine)?.groupValues?.get(1)
+                if (!foundGroup.isNullOrBlank()) {
+                    currentGroup = foundGroup
+                }
 
-                // Mengambil nama channel (biasanya teks setelah tanda koma terakhir)
+                // Mengambil nama channel (teks setelah koma terakhir)
                 currentName = trimmedLine.substringAfterLast(",").trim()
             } 
-            // Jika baris bukan kosong dan bukan komentar (biasanya ini adalah link streaming/video)
             else if (trimmedLine.isNotEmpty() && !trimmedLine.startsWith("#")) {
-                // Menyimpan channel ke dalam daftar
-                channels.add(
-                    LiveSearchResponse(
-                        name = currentName,
-                        url = trimmedLine, // URL video
-                        apiName = this@AdiTVProvider.name,
-                        type = TvType.Live,
-                        posterUrl = currentLogo // Logo channel
-                    )
+                // Membuat data channel
+                val channel = LiveSearchResponse(
+                    name = currentName,
+                    url = trimmedLine,
+                    apiName = this@AdiTVProvider.name,
+                    type = TvType.Live,
+                    posterUrl = currentLogo
                 )
-                // Mengosongkan nama untuk baris selanjutnya
+
+                // Memasukkan channel ke dalam map sesuai dengan nama grupnya
+                if (!channelsByGroup.containsKey(currentGroup)) {
+                    channelsByGroup[currentGroup] = mutableListOf()
+                }
+                channelsByGroup[currentGroup]?.add(channel)
+
+                // Bersihkan variabel untuk baris berikutnya
                 currentName = ""
+                currentLogo = ""
+                currentGroup = "Lainnya" 
             }
         }
 
-        // Mengelompokkan semua channel dalam satu kategori bernama "Playlist Aktif"
-        val homeList = HomePageList(
-            name = "Playlist Aktif",
-            list = channels
-        )
+        // Mengubah Map (grup) menjadi daftar baris (HomePageList) untuk ditampilkan di Cloudstream
+        val homeLists = channelsByGroup.map { (groupName, list) ->
+            HomePageList(
+                name = groupName,
+                list = list
+            )
+        }
 
-        return HomePageResponse(listOf(homeList))
+        return HomePageResponse(homeLists)
     }
 
     /**
-     * Langkah 2: Mengatur halaman detail saat sebuah channel diklik
+     * Langkah 2: Mengatur halaman saat sebuah channel diklik
      */
     override suspend fun load(url: String): LoadResponse {
         return LiveStreamLoadResponse(
-            name = "Live Stream", // Nama standar
+            name = "Live Stream",
             url = url,
             apiName = this.name,
             dataUrl = url
@@ -81,7 +99,7 @@ class AdiTVProvider : MainAPI() {
     }
 
     /**
-     * Langkah 3: Memberikan link video ke pemutar video (Player)
+     * Langkah 3: Memberikan link ke Player dan mendeteksi format video (m3u8 / mpd)
      */
     override suspend fun loadLinks(
         data: String,
@@ -89,15 +107,23 @@ class AdiTVProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Memasukkan URL video langsung ke Extractor
+        
+        // Deteksi format video secara otomatis berdasarkan URL-nya
+        val streamType = when {
+            data.contains(".m3u8") -> ExtractorLinkType.M3U8
+            data.contains(".mpd") -> ExtractorLinkType.DASH
+            else -> ExtractorLinkType.VIDEO
+        }
+
+        // Mengirimkan link video ke pemutar Cloudstream
         callback.invoke(
             ExtractorLink(
                 source = this.name,
                 name = this.name,
-                url = data, // URL streaming dari M3U
+                url = data,
                 referer = "",
                 quality = Qualities.Unknown.value,
-                isM3u8 = data.contains(".m3u8") // Cek otomatis jika formatnya m3u8
+                type = streamType // Menerapkan format video hasil deteksi
             )
         )
         return true
