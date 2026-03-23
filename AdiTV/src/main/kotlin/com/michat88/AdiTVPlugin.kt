@@ -7,7 +7,6 @@ import android.content.Context
 @CloudstreamPlugin
 class AdiTVPlugin : Plugin() {
     override fun load(context: Context) {
-        // Mendaftarkan provider AdiTV agar terbaca oleh Cloudstream
-        registerMainAPI(AdiTV())
+        registerMainAPI(AdiTVProvider())
     }
 }
