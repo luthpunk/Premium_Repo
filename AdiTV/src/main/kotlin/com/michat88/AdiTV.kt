@@ -42,7 +42,7 @@ class AdiTVProvider : MainAPI() {
     // ─────────────────────────────────────────────────────────────────────────
     override val mainPage = mainPageOf(
         "TV Nasional"          to "📺 TV Nasional",
-        "Lain-lain"            to "📺 Channel Lainnya" // 👈 INI PERBAIKANNYA BRO!
+        "Lain-lain"            to "📺 Channel Lainnya" // Kategori untuk yang tidak punya grup
     )
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -170,7 +170,6 @@ class AdiTVProvider : MainAPI() {
             }
         }
 
-        // PERUBAHAN HANYA DI BLOK INI: Menggunakan HomePageList persis seperti KisskhProvider
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
@@ -217,10 +216,6 @@ class AdiTVProvider : MainAPI() {
 
     // ─────────────────────────────────────────────────────────────────────────
     // loadLinks — kirim link ke player
-    // Referensi CS3IPlayer.kt:
-    //   • DASH (.mpd) → ExoPlayer DashMediaSource
-    //   • HLS (.m3u8) → DefaultMediaSourceFactory (AES-128 auto)
-    //   • header dikirim via createVideoSource → setDefaultRequestProperties()
     // ─────────────────────────────────────────────────────────────────────────
     override suspend fun loadLinks(
         data: String,
@@ -239,12 +234,12 @@ class AdiTVProvider : MainAPI() {
 
         // Deteksi tipe link dari clean URL (tanpa query string)
         val cleanUrl = url.split("?")[0].split("|")[0]
+        
+        // PERBAIKAN: Gunakan ExtractorLinkType.VIDEO sebagai fallback untuk link stream mentah
         val linkType = when {
-            cleanUrl.contains(".mpd",  ignoreCase = true) -> ExtractorLinkType.DASH
-            cleanUrl.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
-            url.contains(".mpd",       ignoreCase = true) -> ExtractorLinkType.DASH
-            url.contains(".m3u8",      ignoreCase = true) -> ExtractorLinkType.M3U8
-            else                                          -> ExtractorLinkType.M3U8
+            cleanUrl.contains(".mpd", ignoreCase = true) || url.contains(".mpd", ignoreCase = true) -> ExtractorLinkType.DASH
+            cleanUrl.contains(".m3u8", ignoreCase = true) || url.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
+            else -> ExtractorLinkType.VIDEO
         }
 
         val referer   = ch?.referer?.takeIf   { it.isNotBlank() } ?: ""
