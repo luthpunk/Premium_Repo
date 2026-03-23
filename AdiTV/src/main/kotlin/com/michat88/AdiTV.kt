@@ -79,7 +79,7 @@ class AdiTVProvider : MainAPI() {
     ): Boolean {
         
         if (data.contains(".m3u8")) {
-            // M3u8Helper sudah otomatis menghasilkan ExtractorLink yang valid
+            // M3u8Helper sudah lolos dan berfungsi dengan sempurna
             M3u8Helper.generateM3u8(
                 source = this.name,
                 streamUrl = data,
@@ -87,15 +87,12 @@ class AdiTVProvider : MainAPI() {
             ).forEach(callback)
             
         } else {
-            // PERBAIKAN: Menggunakan newExtractorLink sesuai permintaan Cloudstream terbaru
+            // Cukup berikan informasi intinya saja! Cloudstream akan mengurus sisanya.
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
                     name = this.name,
-                    url = data,
-                    referer = "",
-                    quality = Qualities.Unknown.value,
-                    isM3u8 = false 
+                    url = data
                 )
             )
         }
