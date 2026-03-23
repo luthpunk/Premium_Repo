@@ -42,22 +42,6 @@ class AdiTVProvider : MainAPI() {
     // ─────────────────────────────────────────────────────────────────────────
     override val mainPage = mainPageOf(
         "TV Nasional"          to "📺 TV Nasional",
-        "Channel Indonesia"    to "🇮🇩 Channel Indonesia",
-        "Channel Tv Indihome"  to "📡 Indihome",
-        "Channel Vision+"      to "📺 Vision+",
-        "Channel Transvision"  to "📡 Transvision",
-        "HBO Group"            to "🎬 HBO",
-        "Sports"               to "⚽ Sports",
-        "KIDS"                 to "🧒 Kids",
-        "Channel Music"        to "🎵 Music",
-        "Movies"               to "🎥 Movies",
-        "KNOWLEDGE"            to "🔬 Knowledge",
-        "NEWS & ENTERTAINMENT" to "📰 News",
-        "Channel Tv Singapore" to "🇸🇬 Singapore",
-        "MALAYSIA"             to "🇲🇾 Malaysia",
-        "TVRI"                 to "📡 TVRI",
-        "Event"                to "🔴 Event",
-        "Sports"               to "⚽ Sports",
     )
 
     // ─────────────────────────────────────────────────────────────────────────
