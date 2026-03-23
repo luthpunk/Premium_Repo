@@ -293,10 +293,16 @@ class AdiTVProvider : MainAPI() {
             ?: allChannels.firstOrNull { it.streamUrl.trimEnd() == url.trimEnd() }
             ?: allChannels.firstOrNull { it.streamUrl.trimEnd().equals(url.trimEnd(), ignoreCase = true) }
 
+        // Deteksi tipe link dari URL — prioritaskan clean URL tanpa query string
+        // Referensi M3u8Helper.kt: URL dengan token/encoding panjang tetap bisa jadi HLS
+        // Referensi CS3IPlayer.kt: .mpd = DASH, lainnya default M3U8 untuk live stream
+        val cleanUrl = url.split("?")[0].split("|")[0]
         val linkType = when {
-            url.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
-            url.contains(".mpd",  ignoreCase = true) -> ExtractorLinkType.DASH
-            else                                     -> ExtractorLinkType.M3U8
+            cleanUrl.contains(".mpd",  ignoreCase = true) -> ExtractorLinkType.DASH
+            cleanUrl.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
+            url.contains(".mpd",       ignoreCase = true) -> ExtractorLinkType.DASH
+            url.contains(".m3u8",      ignoreCase = true) -> ExtractorLinkType.M3U8
+            else                                          -> ExtractorLinkType.M3U8
         }
 
         val referer   = ch?.referer?.takeIf   { it.isNotBlank() } ?: ""
@@ -313,20 +319,28 @@ class AdiTVProvider : MainAPI() {
 
         val channelName = ch?.name ?: name
 
-        when (ch?.drmType?.lowercase()) {
+        // Dari CS3IPlayer.kt: ClearKey & Widevine DRM hanya support DASH (.mpd)
+        // HLS (.m3u8) dengan DRM tidak bisa dihandle oleh CloudStream ExoPlayer
+        // Jadi kalau URL-nya HLS, selalu putar sebagai plain stream
+        val isDash = linkType == ExtractorLinkType.DASH
+        val effectiveDrmType = if (isDash) ch?.drmType?.lowercase() else null
+
+        when (effectiveDrmType) {
 
             // ------------------------------------------------------------------
-            // ClearKey DRM
+            // ClearKey DRM — hanya untuk DASH (.mpd)
+            // CS3IPlayer menggunakan LocalMediaDrmCallback dengan format JSON:
+            // {"keys":[{"kty":"oct","k":"<key>","kid":"<kid>"}],"type":"temporary"}
             // ------------------------------------------------------------------
             "clearkey", "org.w3.clearkey" -> {
-                if (ch.drmKid != null && ch.drmKey != null) {
+                if (ch!!.drmKid != null && ch.drmKey != null) {
                     callback(
                         newDrmExtractorLink(
                             source = name,
                             name   = channelName,
                             url    = url,
                             uuid   = CLEARKEY_UUID,
-                            type   = linkType,
+                            type   = ExtractorLinkType.DASH,
                         ) {
                             this.referer = referer
                             this.quality = Qualities.Unknown.value
@@ -337,13 +351,13 @@ class AdiTVProvider : MainAPI() {
                         }
                     )
                 } else {
-                    // ClearKey tanpa kid/key — putar sebagai plain stream
+                    // ClearKey tanpa kid/key — putar sebagai plain DASH
                     callback(
                         newExtractorLink(
                             source = name,
                             name   = channelName,
                             url    = url,
-                            type   = linkType,
+                            type   = ExtractorLinkType.DASH,
                         ) {
                             this.referer = referer
                             this.quality = Qualities.Unknown.value
@@ -354,32 +368,25 @@ class AdiTVProvider : MainAPI() {
             }
 
             // ------------------------------------------------------------------
-            // Widevine DRM (Transvision, HBO, dll)
-            // dt-custom-data harus ada di KEDUA tempat:
-            //   1. headers         → untuk HTTP request ke license server
-            //   2. keyRequestParameters → untuk ExoPlayer DRM session
+            // Widevine DRM — hanya untuk DASH (.mpd)
+            // CS3IPlayer menggunakan HttpMediaDrmCallback dengan licenseUrl
+            // keyRequestParameters dikirim ke DRM session (bukan HTTP header biasa)
             // ------------------------------------------------------------------
             "com.widevine.alpha", "widevine" -> {
-                val licUrl = ch.drmLicenseUrl ?: transvisionLicenseUrl
-
-                // Header untuk license request — wajib include dt-custom-data
-                val wvHeaders = baseHeaders + mapOf(
-                    "dt-custom-data" to transvisionDtCustomData,
-                    "Content-Type"   to "application/octet-stream",
-                )
-
+                val licUrl = ch!!.drmLicenseUrl ?: transvisionLicenseUrl
                 callback(
                     newDrmExtractorLink(
                         source = name,
                         name   = channelName,
                         url    = url,
                         uuid   = WIDEVINE_UUID,
-                        type   = linkType,
+                        type   = ExtractorLinkType.DASH,
                     ) {
                         this.referer              = referer
                         this.quality              = Qualities.Unknown.value
-                        this.headers              = wvHeaders
+                        this.headers              = baseHeaders
                         this.licenseUrl           = licUrl
+                        // keyRequestParameters diteruskan ke DRM session oleh CS3IPlayer
                         this.keyRequestParameters = hashMapOf(
                             "dt-custom-data" to transvisionDtCustomData,
                         )
@@ -389,6 +396,8 @@ class AdiTVProvider : MainAPI() {
 
             // ------------------------------------------------------------------
             // Plain stream — HLS atau DASH tanpa DRM
+            // Termasuk semua channel HLS yang punya DRM tag di playlist
+            // karena CS3IPlayer tidak support DRM untuk HLS
             // ------------------------------------------------------------------
             else -> {
                 callback(
