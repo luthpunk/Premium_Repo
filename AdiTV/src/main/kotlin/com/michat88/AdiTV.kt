@@ -4,8 +4,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import java.net.URI
 
-// Data Kapsul JSON untuk mempertahankan info Channel
+// Kapsul JSON untuk mempertahankan info Channel di Player
 data class ChannelData(
     val name: String,
     val url: String,
@@ -85,12 +86,12 @@ class AdiTVProvider : MainAPI() {
 
         return newLiveStreamLoadResponse(channelName, url, streamUrl) {
             this.posterUrl = channelLogo 
-            this.plot = "📺 Menyiarkan: $channelName\n📂 Kategori: $channelGroup"
+            this.plot = "📺 Menyiarkan: $channelName\n📂 Kategori: $channelGroup\n\nEkstensi AdiTV - Native Player"
         }
     }
 
     /**
-     * Langkah 3: HYBRID INJECTOR (Menyuntikkan Multi-Metode ke Player)
+     * Langkah 3: NATIVE PLAYER + FORCED 720p + DYNAMIC HEADERS
      */
     override suspend fun loadLinks(
         data: String,
@@ -101,79 +102,44 @@ class AdiTVProvider : MainAPI() {
         
         val streamUrl = tryParseJson<ChannelData>(data)?.url ?: data
 
-        // Headers Penyamaran mutlak untuk menembus server
+        // Mengambil domain dasar dari URL untuk dijadikan surat pengantar (Referer)
+        val domain = try {
+            val uri = URI(streamUrl)
+            "${uri.scheme}://${uri.host}/"
+        } catch (e: Exception) {
+            ""
+        }
+
+        // Identitas Penyamaran Super Lengkap!
         val customHeaders = mapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
             "Accept" to "*/*",
-            "Connection" to "keep-alive"
+            "Origin" to if (domain.isNotEmpty()) domain.dropLast(1) else "",
+            "Referer" to domain
         )
 
-        if (streamUrl.contains(".m3u8")) {
-            
-            // ==========================================
-            // JALUR 1: M3U8 HELPER (Membasmi Trick-Play 32x18)
-            // ==========================================
-            try {
-                M3u8Helper.generateM3u8(
-                    source = "Filter", // Nama server
-                    streamUrl = streamUrl,
-                    referer = "",
-                    headers = customHeaders
-                ).forEach { link ->
-                    // Menyaring track sampah (Trick-play 32x18 dll)
-                    if (!link.name.contains("32x18") && !link.name.contains("Trick")) {
-                        callback.invoke(link)
-                    }
-                }
-            } catch (e: Exception) {
-                // Abaikan jika M3u8Helper gagal membedah link (sering terjadi di server ber-token)
-            }
-
-            // ==========================================
-            // JALUR 2: NATIVE EXOPLAYER (Membasmi Error 2004)
-            // ==========================================
-            // Ini akan jadi server cadangan (atau server utama jika Jalur 1 di-lock)
-            callback.invoke(
-                newExtractorLink(
-                    source = "Native", // Nama Server di Player
-                    name = "Auto (Native Player)",
-                    url = streamUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.headers = customHeaders
-                    this.quality = Qualities.Unknown.value
-                }
-            )
-
-        } else if (streamUrl.contains(".mpd")) {
-            // ==========================================
-            // JALUR 3: FORMAT DASH (.MPD)
-            // ==========================================
-            callback.invoke(
-                newExtractorLink(
-                    source = "Native",
-                    name = "DASH Stream",
-                    url = streamUrl,
-                    type = ExtractorLinkType.DASH
-                ) {
-                    this.headers = customHeaders
-                    this.quality = Qualities.Unknown.value
-                }
-            )
-        } else {
-            // JALUR 4: Format Video Lainnya (mp4, mkv, dll)
-            callback.invoke(
-                newExtractorLink(
-                    source = "Native",
-                    name = "Direct Video",
-                    url = streamUrl,
-                    type = ExtractorLinkType.VIDEO
-                ) {
-                    this.headers = customHeaders
-                    this.quality = Qualities.Unknown.value
-                }
-            )
+        // Deteksi Tipe Video
+        val streamType = when {
+            streamUrl.contains(".mpd") -> ExtractorLinkType.DASH
+            streamUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
+            else -> ExtractorLinkType.VIDEO
         }
+
+        // NATIVE INJECTION! Kita menyerahkan segalanya ke ExoPlayer Bawaan Android
+        callback.invoke(
+            newExtractorLink(
+                source = this.name,
+                name = "Live TV (Native HD)",
+                url = streamUrl,
+                type = streamType
+            ) {
+                this.headers = customHeaders
+                
+                // MAGIC FIX: Memaksa Cloudstream langsung meminta resolusi 720p. 
+                // Ini akan mencegah ExoPlayer memutar layar Blank/Hitam 32x18!
+                this.quality = Qualities.P720.value 
+            }
+        )
         
         return true
     }
