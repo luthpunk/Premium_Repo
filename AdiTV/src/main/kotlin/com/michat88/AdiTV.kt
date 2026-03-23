@@ -287,10 +287,11 @@ class AdiTVProvider : MainAPI() {
 
         val url = data.trim()
 
-        // Lookup robust: coba exact match dulu, fallback ke contains
+        // Lookup robust: exact match → trimEnd fallback → case-insensitive fallback
         val allChannels = fetchChannels()
         val ch = allChannels.firstOrNull { it.streamUrl == url }
             ?: allChannels.firstOrNull { it.streamUrl.trimEnd() == url.trimEnd() }
+            ?: allChannels.firstOrNull { it.streamUrl.trimEnd().equals(url.trimEnd(), ignoreCase = true) }
 
         val linkType = when {
             url.contains(".m3u8", ignoreCase = true) -> ExtractorLinkType.M3U8
@@ -298,11 +299,16 @@ class AdiTVProvider : MainAPI() {
             else                                     -> ExtractorLinkType.M3U8
         }
 
-        val referer = ch?.referer?.takeIf { it.isNotBlank() } ?: ""
+        val referer   = ch?.referer?.takeIf   { it.isNotBlank() } ?: ""
+        val userAgent = ch?.userAgent?.takeIf { it.isNotBlank() } ?: USER_AGENT
 
+        // Header lengkap: User-Agent + Referer + Origin wajib untuk Indihome/sysln/dens.tv
         val baseHeaders = buildMap<String, String> {
-            put("User-Agent", ch?.userAgent ?: USER_AGENT)
-            if (referer.isNotBlank()) put("Referer", referer)
+            put("User-Agent", userAgent)
+            if (referer.isNotBlank()) {
+                put("Referer", referer)
+                put("Origin",  referer.trimEnd('/'))
+            }
         }
 
         val channelName = ch?.name ?: name
