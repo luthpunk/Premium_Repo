@@ -4,63 +4,47 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.amap
 
-/**
- * Data class untuk menyimpan informasi satu channel dari M3U playlist.
- */
-data class IptvChannel(
+// ─────────────────────────────────────────────────────────────────────────────
+// Data class — satu channel hasil parse M3U
+// ─────────────────────────────────────────────────────────────────────────────
+data class AdiChannel(
     val name: String,
     val streamUrl: String,
-    val logo: String?          = null,
-    val group: String?         = null,
-    val userAgent: String?     = null,
-    val referer: String?       = null,
-    val drmType: String?       = null,
-    val drmKid: String?        = null,
-    val drmKey: String?        = null,
-    val drmLicenseUrl: String? = null,
+    val logo: String?      = null,
+    val group: String?     = null,
+    val userAgent: String? = null,
+    val referer: String?   = null,
 )
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Provider utama
+// ─────────────────────────────────────────────────────────────────────────────
 class AdiTVProvider : MainAPI() {
 
-    // -----------------------------------------------------------------------
-    // Identitas plugin
-    // mainUrl WAJIB unik dan BUKAN URL sumber playlist — ini hanya identifier
-    // -----------------------------------------------------------------------
     override var name               = "AdiTV"
-    override var mainUrl            = "https://adikasepuh.github.io"
+    override var mainUrl            = "https://raw.githubusercontent.com/amanhnb88"
     override var lang               = "id"
     override val hasMainPage        = true
     override val hasQuickSearch     = false
     override val instantLinkLoading = true
     override val supportedTypes     = setOf(TvType.Live)
 
-    // -----------------------------------------------------------------------
-    // URL playlist di GitHub — sesuaikan dengan path repo kamu
-    // -----------------------------------------------------------------------
-    private val playlistUrl =
-        "https://raw.githubusercontent.com/amanhnb88/Premium_Repo/main/playlist.m3u"
+    // ── Dua sumber playlist (sama persis seperti App__1_.js) ─────────────────
+    private val URL_ID    = "https://raw.githubusercontent.com/amanhnb88/AdiTV/main/streams/id.m3u"
+    private val URL_SUPER = "https://raw.githubusercontent.com/amanhnb88/AdiTV/main/streams/playlist_super.m3u"
 
-    private val transvisionDtCustomData =
-        "eyJ1c2VySWQiOiJyZWFjdC1qdy1wbGF5ZXIiLCJzZXNzaW9uSWQiOiIxMjM0NTY3ODkiLCJtZXJjaGFudCI6ImdpaXRkX3RyYW5zdmlzaW9uIn0="
+    // ── Cache channel ─────────────────────────────────────────────────────────
+    private var cachedChannels: List<AdiChannel>? = null
 
-    private val transvisionLicenseUrl =
-        "https://cubmu.devhik.workers.dev/license_cenc"
-
-    private val skippedGroups = setOf("VOD-Movie")
-
-    // Cache agar tidak re-fetch setiap scroll
-    private var cachedChannels: List<IptvChannel>? = null
-
-    // -----------------------------------------------------------------------
-    // mainPage — format Pair<String, String> sesuai standar MainAPI.kt
-    // key (kiri) = nilai request.data yang dikirim ke getMainPage
-    // value (kanan) = nama kategori yang tampil di UI
-    // -----------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // mainPage — kategori yang tampil di beranda
+    // data = nama group-title yang difilter dari playlist
+    // ─────────────────────────────────────────────────────────────────────────
     override val mainPage = mainPageOf(
-        "Event"                to "🔴 Event",
-        "Channel Tv Indihome"  to "📺 Indihome",
+        "TV Nasional"          to "📺 TV Nasional",
+        "Channel Indonesia"    to "🇮🇩 Channel Indonesia",
+        "Channel Tv Indihome"  to "📡 Indihome",
         "Channel Vision+"      to "📺 Vision+",
-        "Channel Indonesia"    to "🇮🇩 Indonesia",
         "Channel Transvision"  to "📡 Transvision",
         "HBO Group"            to "🎬 HBO",
         "Sports"               to "⚽ Sports",
@@ -72,145 +56,112 @@ class AdiTVProvider : MainAPI() {
         "Channel Tv Singapore" to "🇸🇬 Singapore",
         "MALAYSIA"             to "🇲🇾 Malaysia",
         "TVRI"                 to "📡 TVRI",
+        "Event"                to "🔴 Event",
+        "Sports"               to "⚽ Sports",
     )
 
-    // -----------------------------------------------------------------------
-    // Fetch playlist dari GitHub dan cache hasilnya
-    // -----------------------------------------------------------------------
-    private suspend fun fetchChannels(): List<IptvChannel> {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Fetch gabungan kedua playlist — persis logika App__1_.js fetchChannels()
+    // ─────────────────────────────────────────────────────────────────────────
+    private suspend fun fetchChannels(): List<AdiChannel> {
         cachedChannels?.let { return it }
-        return try {
-            val text = app.get(playlistUrl).text
-            parseM3u(text).also { cachedChannels = it }
-        } catch (e: Exception) {
-            emptyList()
-        }
+
+        var combined = ""
+
+        // Fetch id.m3u (RCTI, MNCTV, GTV, iNews — di-generate script Python)
+        try {
+            val res = app.get(URL_ID, headers = mapOf("Cache-Control" to "no-cache")).text
+            if (res.isNotBlank()) combined += res + "\n"
+        } catch (_: Exception) {}
+
+        // Fetch playlist_super.m3u (semua channel lainnya)
+        try {
+            val res = app.get(URL_SUPER, headers = mapOf("Cache-Control" to "no-cache")).text
+            if (res.isNotBlank()) combined += res + "\n"
+        } catch (_: Exception) {}
+
+        if (combined.isBlank()) return emptyList()
+
+        return parseM3u(combined).also { cachedChannels = it }
     }
 
-    // -----------------------------------------------------------------------
-    // Parser M3U — membaca semua tag EXTINF, EXTVLCOPT, KODIPROP
-    // -----------------------------------------------------------------------
-    private fun parseM3u(m3uText: String): List<IptvChannel> {
-        val channels  = mutableListOf<IptvChannel>()
-        val lines     = m3uText.lines()
+    // ─────────────────────────────────────────────────────────────────────────
+    // Parser M3U — mengikuti logika parseM3U() di App__1_.js
+    // ─────────────────────────────────────────────────────────────────────────
+    private fun parseM3u(text: String): List<AdiChannel> {
+        val channels  = mutableListOf<AdiChannel>()
+        val lines     = text.lines()
 
-        var pName:    String? = null
-        var pLogo:    String? = null
-        var pGroup:   String? = null
-        var pUA:      String? = null
-        var pRef:     String? = null
-        var pDrmType: String? = null
-        var pDrmKid:  String? = null
-        var pDrmKey:  String? = null
-        var pDrmLic:  String? = null
+        var pName:  String? = null
+        var pLogo:  String? = null
+        var pGroup: String? = null
+        var pUA:    String? = null
+        var pRef:   String? = null
 
         fun reset() {
-            pName = null; pLogo = null; pGroup = null
-            pUA = null; pRef = null
-            pDrmType = null; pDrmKid = null; pDrmKey = null; pDrmLic = null
+            pName = null; pLogo = null; pGroup = null; pUA = null; pRef = null
         }
 
         for (raw in lines) {
             val line = raw.trim()
             when {
-                // --- Metadata utama channel ---
+                // ── #EXTINF: ambil metadata (sama seperti App__1_.js parseM3U) ──
                 line.startsWith("#EXTINF") -> {
-                    pLogo = Regex("""tvg-logo="([^"]*)"""")
+                    pLogo  = Regex("""tvg-logo="([^"]*)"""")
                         .find(line)?.groupValues?.get(1)
-                        ?.takeIf { it.isNotBlank() && it != "_____" }
+                        ?.takeIf { it.isNotBlank() }
 
                     pGroup = Regex("""group-title="([^"]*)"""")
                         .find(line)?.groupValues?.get(1)
                         ?.takeIf { it.isNotBlank() }
+                        ?.split(";")?.get(0)   // App.js: split(';')[0]
 
-                    pName = line.substringAfterLast(",").trim()
-                        .takeIf { it.isNotBlank() }
+                    // Nama channel = teks setelah koma terakhir
+                    var rawName = line.substringAfterLast(",").trim()
+                    // App.js: bersihkan "(720p)", "(1080p)", "[...]"
+                    rawName = rawName.replace(Regex("""\s*\(\d+[piPI]\)"""), "")
+                    rawName = rawName.replace(Regex("""\s*\[.*?]"""), "")
+                    pName   = rawName.trim().takeIf { it.isNotBlank() }
                 }
 
-                // --- Custom User-Agent ---
-                line.startsWith("#EXTVLCOPT:http-user-agent=") ->
-                    pUA = line.removePrefix("#EXTVLCOPT:http-user-agent=").trim()
-                        .takeIf { it.isNotBlank() }
-
-                // --- Custom Referer ---
-                line.startsWith("#EXTVLCOPT:http-referrer=") ->
+                // ── #EXTVLCOPT: header referer & user-agent ──────────────────
+                line.startsWith("#EXTVLCOPT:http-referrer=") -> {
                     pRef = line.removePrefix("#EXTVLCOPT:http-referrer=").trim()
                         .takeIf { it.isNotBlank() }
-
-                // --- Tipe DRM ---
-                line.startsWith("#KODIPROP:inputstream.adaptive.license_type=") -> {
-                    val t = line
-                        .removePrefix("#KODIPROP:inputstream.adaptive.license_type=")
-                        .trim().lowercase()
-                    pDrmType = when {
-                        t == "clearkey" || t == "org.w3.clearkey" -> "clearkey"
-                        t.startsWith("com.widevine")              -> "widevine"
-                        else                                       -> pDrmType
-                    }
+                }
+                line.startsWith("#EXTVLCOPT:http-user-agent=") -> {
+                    pUA = line.removePrefix("#EXTVLCOPT:http-user-agent=").trim()
+                        .takeIf { it.isNotBlank() }
                 }
 
-                // --- DRM Key: ClearKey KID:KEY atau Widevine license URL ---
-                line.startsWith("#KODIPROP:inputstream.adaptive.license_key=") -> {
-                    val kv = line
-                        .removePrefix("#KODIPROP:inputstream.adaptive.license_key=")
-                        .trim()
-                    when {
-                        // Widevine: license URL
-                        kv.startsWith("http") -> pDrmLic = kv
-
-                        // ClearKey: format KID:KEY — keduanya hex 32 karakter
-                        kv.contains(":") -> {
-                            // limit=2 agar tidak salah split jika ada karakter ':' lain
-                            val p = kv.split(":", limit = 2)
-                            if (p.size == 2) {
-                                val kid = p[0].trim()
-                                val key = p[1].trim()
-                                // Validasi: keduanya harus hex string (hanya 0-9, a-f, A-F)
-                                val hexRegex = Regex("^[0-9a-fA-F]+$")
-                                if (kid.matches(hexRegex) && key.matches(hexRegex)) {
-                                    pDrmKid = kid
-                                    pDrmKey = key
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // --- URL stream ditemukan: simpan channel lalu reset ---
-                // Hanya proses URL pertama per blok (pName null = sudah di-reset = skip)
+                // ── URL stream ────────────────────────────────────────────────
                 line.startsWith("http") -> {
-                    val grp = pGroup ?: ""
-                    if (grp !in skippedGroups && pName != null) {
+                    if (pName != null) {
                         channels.add(
-                            IptvChannel(
-                                name          = pName!!,
-                                streamUrl     = line,
-                                logo          = pLogo,
-                                group         = grp.takeIf { it.isNotBlank() },
-                                userAgent     = pUA,
-                                referer       = pRef,
-                                drmType       = pDrmType,
-                                drmKid        = pDrmKid,
-                                drmKey        = pDrmKey,
-                                drmLicenseUrl = pDrmLic,
+                            AdiChannel(
+                                name      = pName!!,
+                                streamUrl = line,
+                                logo      = pLogo,
+                                group     = pGroup?.takeIf { it.isNotBlank() } ?: "Lain-lain",
+                                userAgent = pUA,
+                                referer   = pRef,
                             )
                         )
-                        // Reset setelah URL pertama — URL fallback berikutnya diabaikan
                         reset()
                     }
-                    // Jika pName sudah null: ini URL fallback, skip saja
+                    // URL kedua (fallback) diabaikan — reset sudah membuat pName=null
                 }
 
-                // --- Baris komentar/separator/kosong: abaikan ---
+                // ── Baris lain (komentar, KODIPROP, separator) — skip ─────────
                 else -> { /* no-op */ }
             }
         }
         return channels
     }
 
-    // -----------------------------------------------------------------------
-    // getMainPage — tampilkan channel per kategori
-    // -----------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // getMainPage
+    // ─────────────────────────────────────────────────────────────────────────
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest,
@@ -237,9 +188,9 @@ class AdiTVProvider : MainAPI() {
         return newHomePageResponse(request.name, items, hasNext = to < filtered.size)
     }
 
-    // -----------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
     // search
-    // -----------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
     override suspend fun search(query: String): List<SearchResponse>? {
         val all = fetchChannels()
         if (all.isEmpty()) return null
@@ -256,27 +207,29 @@ class AdiTVProvider : MainAPI() {
             }
     }
 
-    // -----------------------------------------------------------------------
-    // load — halaman detail channel
-    // -----------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // load
+    // ─────────────────────────────────────────────────────────────────────────
     override suspend fun load(url: String): LoadResponse? {
         val ch = fetchChannels().firstOrNull { it.streamUrl == url }
-            ?: IptvChannel(
-                name      = url.substringAfterLast("/")
-                              .substringBefore("?")
-                              .ifBlank { "Channel" },
+            ?: AdiChannel(
+                name      = url.substringAfterLast("/").substringBefore("?").ifBlank { "Channel" },
                 streamUrl = url,
             )
         return newLiveStreamLoadResponse(ch.name, url, url) {
             posterUrl = ch.logo
-            plot      = ch.group?.let { "Grup: $it" }
+            plot      = ch.group?.let { "Kategori: $it" }
             tags      = listOfNotNull(ch.group)
         }
     }
 
-    // -----------------------------------------------------------------------
-    // loadLinks — kirim link ke player dengan DRM handling
-    // -----------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // loadLinks — kirim link ke player
+    // Referensi CS3IPlayer.kt:
+    //   • DASH (.mpd) → ExoPlayer DashMediaSource
+    //   • HLS (.m3u8) → DefaultMediaSourceFactory (AES-128 auto)
+    //   • header dikirim via createVideoSource → setDefaultRequestProperties()
+    // ─────────────────────────────────────────────────────────────────────────
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -287,15 +240,12 @@ class AdiTVProvider : MainAPI() {
 
         val url = data.trim()
 
-        // Lookup robust: exact match → trimEnd fallback → case-insensitive fallback
+        // Lookup channel — exact → trimEnd → case-insensitive
         val allChannels = fetchChannels()
         val ch = allChannels.firstOrNull { it.streamUrl == url }
             ?: allChannels.firstOrNull { it.streamUrl.trimEnd() == url.trimEnd() }
-            ?: allChannels.firstOrNull { it.streamUrl.trimEnd().equals(url.trimEnd(), ignoreCase = true) }
 
-        // Deteksi tipe link dari URL — prioritaskan clean URL tanpa query string
-        // Referensi M3u8Helper.kt: URL dengan token/encoding panjang tetap bisa jadi HLS
-        // Referensi CS3IPlayer.kt: .mpd = DASH, lainnya default M3U8 untuk live stream
+        // Deteksi tipe link dari clean URL (tanpa query string)
         val cleanUrl = url.split("?")[0].split("|")[0]
         val linkType = when {
             cleanUrl.contains(".mpd",  ignoreCase = true) -> ExtractorLinkType.DASH
@@ -308,8 +258,8 @@ class AdiTVProvider : MainAPI() {
         val referer   = ch?.referer?.takeIf   { it.isNotBlank() } ?: ""
         val userAgent = ch?.userAgent?.takeIf { it.isNotBlank() } ?: USER_AGENT
 
-        // Header lengkap: User-Agent + Referer + Origin wajib untuk Indihome/sysln/dens.tv
-        val baseHeaders = buildMap<String, String> {
+        // Header lengkap: User-Agent + Referer + Origin
+        val headers = buildMap<String, String> {
             put("User-Agent", userAgent)
             if (referer.isNotBlank()) {
                 put("Referer", referer)
@@ -317,103 +267,18 @@ class AdiTVProvider : MainAPI() {
             }
         }
 
-        val channelName = ch?.name ?: name
-
-        // Dari CS3IPlayer.kt: ClearKey & Widevine DRM hanya support DASH (.mpd)
-        // HLS (.m3u8) dengan DRM tidak bisa dihandle oleh CloudStream ExoPlayer
-        // Jadi kalau URL-nya HLS, selalu putar sebagai plain stream
-        val isDash = linkType == ExtractorLinkType.DASH
-        val effectiveDrmType = if (isDash) ch?.drmType?.lowercase() else null
-
-        when (effectiveDrmType) {
-
-            // ------------------------------------------------------------------
-            // ClearKey DRM — hanya untuk DASH (.mpd)
-            // CS3IPlayer menggunakan LocalMediaDrmCallback dengan format JSON:
-            // {"keys":[{"kty":"oct","k":"<key>","kid":"<kid>"}],"type":"temporary"}
-            // ------------------------------------------------------------------
-            "clearkey", "org.w3.clearkey" -> {
-                if (ch!!.drmKid != null && ch.drmKey != null) {
-                    callback(
-                        newDrmExtractorLink(
-                            source = name,
-                            name   = channelName,
-                            url    = url,
-                            uuid   = CLEARKEY_UUID,
-                            type   = ExtractorLinkType.DASH,
-                        ) {
-                            this.referer = referer
-                            this.quality = Qualities.Unknown.value
-                            this.headers = baseHeaders
-                            this.kid     = ch.drmKid
-                            this.key     = ch.drmKey
-                            this.kty     = "oct"
-                        }
-                    )
-                } else {
-                    // ClearKey tanpa kid/key — putar sebagai plain DASH
-                    callback(
-                        newExtractorLink(
-                            source = name,
-                            name   = channelName,
-                            url    = url,
-                            type   = ExtractorLinkType.DASH,
-                        ) {
-                            this.referer = referer
-                            this.quality = Qualities.Unknown.value
-                            this.headers = baseHeaders
-                        }
-                    )
-                }
+        callback(
+            newExtractorLink(
+                source = name,
+                name   = ch?.name ?: name,
+                url    = url,
+                type   = linkType,
+            ) {
+                this.referer = referer
+                this.quality = Qualities.Unknown.value
+                this.headers = headers
             }
-
-            // ------------------------------------------------------------------
-            // Widevine DRM — hanya untuk DASH (.mpd)
-            // CS3IPlayer menggunakan HttpMediaDrmCallback dengan licenseUrl
-            // keyRequestParameters dikirim ke DRM session (bukan HTTP header biasa)
-            // ------------------------------------------------------------------
-            "com.widevine.alpha", "widevine" -> {
-                val licUrl = ch!!.drmLicenseUrl ?: transvisionLicenseUrl
-                callback(
-                    newDrmExtractorLink(
-                        source = name,
-                        name   = channelName,
-                        url    = url,
-                        uuid   = WIDEVINE_UUID,
-                        type   = ExtractorLinkType.DASH,
-                    ) {
-                        this.referer              = referer
-                        this.quality              = Qualities.Unknown.value
-                        this.headers              = baseHeaders
-                        this.licenseUrl           = licUrl
-                        // keyRequestParameters diteruskan ke DRM session oleh CS3IPlayer
-                        this.keyRequestParameters = hashMapOf(
-                            "dt-custom-data" to transvisionDtCustomData,
-                        )
-                    }
-                )
-            }
-
-            // ------------------------------------------------------------------
-            // Plain stream — HLS atau DASH tanpa DRM
-            // Termasuk semua channel HLS yang punya DRM tag di playlist
-            // karena CS3IPlayer tidak support DRM untuk HLS
-            // ------------------------------------------------------------------
-            else -> {
-                callback(
-                    newExtractorLink(
-                        source = name,
-                        name   = channelName,
-                        url    = url,
-                        type   = linkType,
-                    ) {
-                        this.referer = referer
-                        this.quality = Qualities.Unknown.value
-                        this.headers = baseHeaders
-                    }
-                )
-            }
-        }
+        )
         return true
     }
 }
