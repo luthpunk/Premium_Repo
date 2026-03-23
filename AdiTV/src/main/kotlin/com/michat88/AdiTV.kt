@@ -42,6 +42,7 @@ class AdiTVProvider : MainAPI() {
     // ─────────────────────────────────────────────────────────────────────────
     override val mainPage = mainPageOf(
         "TV Nasional"          to "📺 TV Nasional",
+        "Lain-lain"            to "📺 Channel Lainnya" // 👈 INI PERBAIKANNYA BRO!
     )
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -189,8 +190,7 @@ class AdiTVProvider : MainAPI() {
         val q = query.trim().lowercase()
         return all
             .filter {
-                it.name.lowercase().contains(q) ||
-                it.group?.lowercase()?.contains(q) == true
+                it.name.lowercase().contains(q) || it.group?.lowercase()?.contains(q) == true
             }
             .amap { ch ->
                 newLiveSearchResponse(ch.name, ch.streamUrl, TvType.Live) {
