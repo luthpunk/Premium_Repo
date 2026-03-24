@@ -155,6 +155,7 @@ open class Adicinemax21 : TmdbProvider() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        // PERBAIKAN WARNING: Menghapus Elvis operator (?:) yang tidak berguna di akhir try-catch
         val data = try {
             if (url.startsWith("https://www.themoviedb.org/")) {
                 val segments = url.removeSuffix("/").split("/")
@@ -170,12 +171,12 @@ open class Adicinemax21 : TmdbProvider() {
             }
         } catch (e: Exception) {
             throw ErrorLoadingException("Invalid URL or JSON data: ${e.message}")
-        } ?: throw ErrorLoadingException("Invalid data format")
+        }
 
         val type = getType(data.type)
         val append = "alternative_titles,credits,external_ids,keywords,videos,recommendations"
         
-        // REVISI 1: Ditambahkan '&include_video_language=en,id' agar trailer berbahasa Inggris/Indonesia
+        // PERBAIKAN TRAILER: Ditambahkan '&include_video_language=en,id' agar trailer berbahasa Inggris/Indonesia
         val resUrl = if (type == TvType.Movie) {
             "$tmdbAPI/movie/${data.id}?api_key=$apiKey&append_to_response=$append&include_video_language=en,id"
         } else {
@@ -212,7 +213,6 @@ open class Adicinemax21 : TmdbProvider() {
         val recommendations =
             res.recommendations?.results?.mapNotNull { media -> media.toSearchResponse() }
 
-        // REVISI 2: Menggunakan firstOrNull() agar outputnya murni String
         val trailer = res.videos?.results
             ?.filter { it.site == "YouTube" && it.key?.isNotBlank() == true && it.type == "Trailer" }
             ?.sortedByDescending { it.type == "Trailer" }
