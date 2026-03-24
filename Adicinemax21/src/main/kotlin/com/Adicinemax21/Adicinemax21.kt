@@ -148,7 +148,6 @@ open class Adicinemax21 : TmdbProvider() {
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        // PERUBAHAN: Mengubah parameter language=en-US menjadi language=id-ID agar hasil pencarian berbahasa Indonesia
         return app.get("$tmdbAPI/search/multi?api_key=$apiKey&language=id-ID&query=$query&page=1&include_adult=${settingsForProvider.enableAdult}")
             .parsedSafe<Results>()?.results?.mapNotNull { media ->
                 media.toSearchResponse()
@@ -176,14 +175,25 @@ open class Adicinemax21 : TmdbProvider() {
         val type = getType(data.type)
         val append = "alternative_titles,credits,external_ids,keywords,videos,recommendations"
         
-        // PERUBAHAN: Ditambahkan &language=id-ID agar sinopsis film/serial diterjemahkan ke bahasa Indonesia
-        val resUrl = if (type == TvType.Movie) {
+        // Minta bahasa Indonesia dulu (id-ID)
+        val resUrlId = if (type == TvType.Movie) {
             "$tmdbAPI/movie/${data.id}?api_key=$apiKey&append_to_response=$append&include_video_language=en,id&language=id-ID"
         } else {
             "$tmdbAPI/tv/${data.id}?api_key=$apiKey&append_to_response=$append&include_video_language=en,id&language=id-ID"
         }
-        val res = app.get(resUrl).parsedSafe<MediaDetail>()
+        
+        val res = app.get(resUrlId).parsedSafe<MediaDetail>()
             ?: throw ErrorLoadingException("Invalid Json Response")
+
+        // SMART FALLBACK 1: Mengecek Sinopsis Utama
+        var plot = res.overview
+        if (plot.isNullOrBlank()) {
+            val resUrlEn = resUrlId.replace("&language=id-ID", "&language=en-US")
+            val enRes = app.get(resUrlEn).parsedSafe<MediaDetail>()
+            if (enRes != null && !enRes.overview.isNullOrBlank()) {
+                plot = enRes.overview // Jika indo kosong, timpa pakai inggris
+            }
+        }
 
         val title = res.title ?: res.name ?: return null
         val poster = getOriImageUrl(res.posterPath)
@@ -222,44 +232,54 @@ open class Adicinemax21 : TmdbProvider() {
         return if (type == TvType.TvSeries) {
             val lastSeason = res.lastEpisodeToAir?.seasonNumber
             val episodes = res.seasons?.mapNotNull { season ->
-                // PERUBAHAN: Ditambahkan &language=id-ID agar ringkasan cerita per episode juga menggunakan bahasa Indonesia
-                app.get("$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey&language=id-ID")
-                    .parsedSafe<MediaDetailEpisodes>()?.episodes?.map { eps ->
-                        newEpisode(
-                            data = LinkData(
-                                data.id,
-                                res.externalIds?.imdbId,
-                                res.externalIds?.tvdbId,
-                                data.type,
-                                eps.seasonNumber,
-                                eps.episodeNumber,
-                                title = title,
-                                year = season.airDate?.split("-")?.first()?.toIntOrNull(),
-                                orgTitle = orgTitle,
-                                isAnime = isAnime,
-                                airedYear = year,
-                                lastSeason = lastSeason,
-                                epsTitle = eps.name,
-                                jpTitle = res.alternativeTitles?.results?.find { it.iso31661 == "JP" }?.title,
-                                date = season.airDate,
-                                airedDate = res.releaseDate
-                                    ?: res.firstAirDate,
-                                isAsian = isAsian,
-                                isBollywood = isBollywood,
-                                isCartoon = isCartoon
-                            ).toJson()
-                        ) {
-                            this.name =
-                                eps.name + if (isUpcoming(eps.airDate)) " • [UPCOMING]" else ""
-                            this.season = eps.seasonNumber
-                            this.episode = eps.episodeNumber
-                            this.posterUrl = getImageUrl(eps.stillPath)
-                            this.score = Score.from10(eps.voteAverage) 
-                            this.description = eps.overview
-                        }.apply {
-                            this.addDate(eps.airDate)
-                        }
+                val seasonUrlId = "$tmdbAPI/${data.type}/${data.id}/season/${season.seasonNumber}?api_key=$apiKey&language=id-ID"
+                var seasonRes = app.get(seasonUrlId).parsedSafe<MediaDetailEpisodes>()
+                
+                // SMART FALLBACK 2: Mengecek Sinopsis Episode
+                if (seasonRes?.episodes?.firstOrNull()?.overview.isNullOrBlank()) {
+                    val seasonUrlEn = seasonUrlId.replace("&language=id-ID", "&language=en-US")
+                    val enSeasonRes = app.get(seasonUrlEn).parsedSafe<MediaDetailEpisodes>()
+                    if (enSeasonRes != null) {
+                        seasonRes = enSeasonRes // Timpa seluruh season dengan bahasa inggris jika indonya kosong
                     }
+                }
+
+                seasonRes?.episodes?.map { eps ->
+                    newEpisode(
+                        data = LinkData(
+                            data.id,
+                            res.externalIds?.imdbId,
+                            res.externalIds?.tvdbId,
+                            data.type,
+                            eps.seasonNumber,
+                            eps.episodeNumber,
+                            title = title,
+                            year = season.airDate?.split("-")?.first()?.toIntOrNull(),
+                            orgTitle = orgTitle,
+                            isAnime = isAnime,
+                            airedYear = year,
+                            lastSeason = lastSeason,
+                            epsTitle = eps.name,
+                            jpTitle = res.alternativeTitles?.results?.find { it.iso31661 == "JP" }?.title,
+                            date = season.airDate,
+                            airedDate = res.releaseDate
+                                ?: res.firstAirDate,
+                            isAsian = isAsian,
+                            isBollywood = isBollywood,
+                            isCartoon = isCartoon
+                        ).toJson()
+                    ) {
+                        this.name =
+                            eps.name + if (isUpcoming(eps.airDate)) " • [UPCOMING]" else ""
+                        this.season = eps.seasonNumber
+                        this.episode = eps.episodeNumber
+                        this.posterUrl = getImageUrl(eps.stillPath)
+                        this.score = Score.from10(eps.voteAverage) 
+                        this.description = eps.overview
+                    }.apply {
+                        this.addDate(eps.airDate)
+                    }
+                }
             }?.flatten() ?: listOf()
             newTvSeriesLoadResponse(
                 title,
@@ -270,7 +290,7 @@ open class Adicinemax21 : TmdbProvider() {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = bgPoster
                 this.year = year
-                this.plot = res.overview
+                this.plot = plot // Disesuaikan menggunakan variabel plot yang sudah difilter fallback
                 this.tags = keywords.takeIf { !it.isNullOrEmpty() } ?: genres
                 this.score = Score.from10(res.voteAverage?.toString())
                 this.showStatus = getStatus(res.status)
@@ -306,7 +326,7 @@ open class Adicinemax21 : TmdbProvider() {
                 this.backgroundPosterUrl = bgPoster
                 this.comingSoon = isUpcoming(releaseDate)
                 this.year = year
-                this.plot = res.overview
+                this.plot = plot // Disesuaikan menggunakan variabel plot yang sudah difilter fallback
                 this.duration = res.runtime
                 this.tags = keywords.takeIf { !it.isNullOrEmpty() } ?: genres
                 this.score = Score.from10(res.voteAverage?.toString())
