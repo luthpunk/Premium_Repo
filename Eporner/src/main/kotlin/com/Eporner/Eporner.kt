@@ -11,6 +11,7 @@ class Eporner : MainAPI() {
     override var name                 = "Eporner"
     override val hasMainPage          = true
     override var lang                 = "en"
+    
     override val hasDownloadSupport   = true
     override val hasChromecastSupport = true
     override val supportedTypes       = setOf(TvType.NSFW)
@@ -45,6 +46,7 @@ class Eporner : MainAPI() {
         val title = fixTitle(this.select("div.mbunder p.mbtit a").text() ?: "No Title").trim()
         val href = fixUrl(this.select("div.mbcontent a").attr("href"))
         var posterUrl = this.selectFirst("img")?.attr("data-src")
+ 
         if (posterUrl.isNullOrBlank())
         {
             posterUrl=this.selectFirst("img")?.attr("src")
@@ -68,15 +70,22 @@ class Eporner : MainAPI() {
         val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.trim().toString()
         val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
-    
+        
+        // --- BAGIAN BARU: MENGAMBIL REKOMENDASI VIDEO ---
+        val recommendationsList = document.select("div#relateddiv div.mb").mapNotNull {
+            it.toSearchResult()
+        }
+        // ------------------------------------------------
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
+            this.recommendations = recommendationsList // Menyematkan rekomendasi ke tampilan
         }
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+    
         val doc= app.get(data).toString()
         val vid=Regex("EP.video.player.vid = '([^']+)'").find(doc)?.groupValues?.get(1).toString()
         val hash=Regex("EP.video.player.hash = '([^']+)'").find(doc)?.groupValues?.get(1).toString()
@@ -87,6 +96,7 @@ class Eporner : MainAPI() {
         val sources = jsonObject.getJSONObject("sources")
         val mp4Sources = sources.getJSONObject("mp4")
         val qualities = mp4Sources.keys()
+ 
         while (qualities.hasNext()) {
             val quality = qualities.next() as String
             val sourceObject = mp4Sources.getJSONObject(quality)
@@ -106,7 +116,8 @@ class Eporner : MainAPI() {
         }
         return true
     }
-// Thanks to https://github.com/alfa-addon/addon/blob/2a3c9d5e4d35f8420e680d2ee8dd31291bbc727e/plugin.video.alfa/servers/eporner.py#L26 for Code
+
+    // Thanks to https://github.com/alfa-addon/addon/blob/2a3c9d5e4d35f8420e680d2ee8dd31291bbc727e/plugin.video.alfa/servers/eporner.py#L26 for Code
     fun base36(hash: String): String {
         return if (hash.length >= 32) {
             // Split the hash into 4 parts, convert each part to base36, and concatenate the results
@@ -121,7 +132,7 @@ class Eporner : MainAPI() {
         }
     }
     private fun getIndexQuality(str: String?): Int {
-        return Regex("(\\d{3,4})[pP]").find(str ?: "") ?. groupValues ?. getOrNull(1) ?. toIntOrNull()
+        return Regex("(\\d{3,4})[pP]").find(str ?: "") ?.groupValues ?. getOrNull(1) ?. toIntOrNull()
             ?: Qualities.Unknown.value
     }
 }
