@@ -19,11 +19,14 @@ class Eporner : MainAPI() {
 
     override val mainPage = mainPageOf(
             "" to "Recent Videos",
-            "cat/milf" to "Milf",
-            "cat/japanese" to "Japanese",
-            "cat/hd-1080p" to "1080 Porn",
+            "best-videos" to "Best Videos",
+            // "top-rated" to "Top Rated",
+            // "most-viewed" to "Most Viewed",
+            // "cat/milf" to "Milf",
+            // "cat/japanese" to "Japanese",
+            // "cat/hd-1080p" to "1080 Porn",
             "cat/4k-porn" to "4K Porn",
-            "recommendations" to "Recommendation Videos",
+            // "recommendations" to "Recommendation Videos",
             "tag/pure-taboo" to "Pure Taboo",
             "tag/indonesia" to "Indonesia",
             "tag/taboo" to "Taboo",
