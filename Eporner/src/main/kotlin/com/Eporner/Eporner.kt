@@ -27,6 +27,12 @@ class Eporner : MainAPI() {
             "cat/hd-1080p" to "1080 Porn",
             "cat/4k-porn" to "4K Porn",
             "recommendations" to "Recommendation Videos",
+            "tag/pure-taboo" to "Pure Taboo",
+            "tag/indonesia" to "Indonesia",
+            "tag/taboo" to "Taboo",
+            "tag/uncensored" to "Uncensored",
+            "tag/wife-cheating" to "Wife Cheating",
+            "tag/wife-swap" to "wife swap",
         )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -45,6 +51,7 @@ class Eporner : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse {
         val title = fixTitle(this.select("div.mbunder p.mbtit a").text() ?: "No Title").trim()
         val href = fixUrl(this.select("div.mbcontent a").attr("href"))
+        
         var posterUrl = this.selectFirst("img")?.attr("data-src")
  
         if (posterUrl.isNullOrBlank())
@@ -68,6 +75,7 @@ class Eporner : MainAPI() {
         val document = app.get(url).document
 
         val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.trim().toString()
+   
         val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
         
@@ -78,7 +86,7 @@ class Eporner : MainAPI() {
         // ------------------------------------------------
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = poster
+             this.posterUrl = poster
             this.plot = description
             this.recommendations = recommendationsList // Menyematkan rekomendasi ke tampilan
         }
@@ -98,18 +106,18 @@ class Eporner : MainAPI() {
         val qualities = mp4Sources.keys()
  
         while (qualities.hasNext()) {
-            val quality = qualities.next() as String
+             val quality = qualities.next() as String
             val sourceObject = mp4Sources.getJSONObject(quality)
             val src = sourceObject.getString("src")
             val labelShort = sourceObject.getString("labelShort") ?: ""
             callback.invoke(
                 newExtractorLink(
-                    source = name,
+                     source = name,
                     name = name,
                     url = src,
                     type = INFER_TYPE
                 ) {
-                    this.referer = ""
+                     this.referer = ""
                     this.quality = getIndexQuality(labelShort)
                 }
             )
@@ -124,7 +132,7 @@ class Eporner : MainAPI() {
             val part1 = BigInteger(hash.substring(0, 8), 16).toString(36)
             val part2 = BigInteger(hash.substring(8, 16), 16).toString(36)
             val part3 = BigInteger(hash.substring(16, 24), 16).toString(36)
-            val part4 = BigInteger(hash.substring(24, 32), 16).toString(36)
+             val part4 = BigInteger(hash.substring(24, 32), 16).toString(36)
 
             part1 + part2 + part3 + part4
         } else {
@@ -132,7 +140,7 @@ class Eporner : MainAPI() {
         }
     }
     private fun getIndexQuality(str: String?): Int {
-        return Regex("(\\d{3,4})[pP]").find(str ?: "") ?.groupValues ?. getOrNull(1) ?. toIntOrNull()
+        return Regex("(\\d{3,4})[pP]").find(str ?: "") ?.groupValues ?.getOrNull(1) ?. toIntOrNull()
             ?: Qualities.Unknown.value
     }
 }
