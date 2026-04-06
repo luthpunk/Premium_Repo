@@ -19,9 +19,6 @@ class Eporner : MainAPI() {
 
     override val mainPage = mainPageOf(
             "" to "Recent Videos",
-            "best-videos" to "Best Videos",
-            "top-rated" to "Top Rated",
-            "most-viewed" to "Most Viewed",
             "cat/milf" to "Milf",
             "cat/japanese" to "Japanese",
             "cat/hd-1080p" to "1080 Porn",
