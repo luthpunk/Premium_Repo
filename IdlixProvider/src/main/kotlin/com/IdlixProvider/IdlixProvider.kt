@@ -65,42 +65,29 @@ class IdlixProvider : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
 
-    // FUNGSI PENCARIAN YANG SUDAH DIROMBAK (ANTI-CRASH)
+    // FUNGSI PENCARIAN YANG SUDAH DIBERSIHKAN DARI ERROR
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = java.net.URLEncoder.encode(query, "utf-8")
         val url = "$mainUrl/api/search?q=$encodedQuery&page=1&limit=36"
         
-        val responseText = app.get(url).text
-        val jsonNode = AppUtils.mapper.readTree(responseText)
-        val arrayNode = jsonNode.get("data") ?: jsonNode.get("results") ?: jsonNode.get("items") ?: jsonNode
+        // Kita daur ulang IdlixApiResponse karena strukturnya sama persis!
+        val response = app.get(url).parsedSafe<IdlixApiResponse>()
         
-        if (arrayNode == null || !arrayNode.isArray) return emptyList()
-
-        val searchResults = arrayListOf<SearchResponse>()
-        for (item in arrayNode) {
-            val title = item.get("title")?.asText() ?: item.get("name")?.asText() ?: continue
-            val slug = item.get("slug")?.asText() ?: continue
-            val contentType = item.get("contentType")?.asText() ?: ""
-            val type = if (contentType.contains("series")) TvType.TvSeries else TvType.Movie
+        return response?.data?.mapNotNull { item ->
+            val title = item.title ?: item.name ?: return@mapNotNull null
+            val slug = item.slug ?: return@mapNotNull null
+            val type = if (item.contentType?.contains("series") == true) TvType.TvSeries else TvType.Movie
             
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
-            val posterPath = item.get("posterPath")?.asText()
+            val posterUrl = item.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
             
-            val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") {
-                "" // Biarkan kosong jika tidak ada poster agar Coil tidak crash
-            } else {
-                "https://image.tmdb.org/t/p/w342$posterPath"
-            }
-            
-            searchResults.add(newMovieSearchResponse(title, href, type) {
+            newMovieSearchResponse(title, href, type) {
                 this.posterUrl = posterUrl
-            })
-        }
-        
-        return searchResults
+            }
+        } ?: emptyList()
     }
 
-    // FUNGSI DETAIL FILM YANG SUDAH DIROMBAK (MEMBACA JSON)
+    // FUNGSI DETAIL FILM YANG SUDAH DIBERSIHKAN DARI ERROR
     override suspend fun load(url: String): LoadResponse {
         val isSeries = url.contains("/series/")
         val slug = url.split("/").last()
@@ -116,8 +103,9 @@ class IdlixProvider : MainAPI() {
         val plot = response.overview
         val year = (response.releaseDate ?: response.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
         
-        // Konversi rating dari 8.10 menjadi 81
-        val rating = response.voteAverage?.toFloatOrNull()?.times(10)?.toInt()
+        // Perbaikan Error Score (diubah ke String)
+        val ratingStr = response.voteAverage?.toFloatOrNull()?.times(10)?.toInt()?.toString()
+        
         val trailer = response.trailerUrl
         val tags = response.genres?.mapNotNull { it.name }
         
@@ -135,14 +123,14 @@ class IdlixProvider : MainAPI() {
             response.seasons?.forEach { season ->
                 if (season.id == response.firstSeason?.id) {
                     response.firstSeason?.episodes?.forEach { ep ->
+                        // Perbaikan Error Episode menjadi newEpisode
                         episodes.add(
-                            Episode(
-                                data = ep.id ?: "", // ID digunakan untuk pemutar video nanti
-                                name = ep.name,
-                                season = season.seasonNumber,
-                                episode = ep.episodeNumber,
-                                posterUrl = ep.stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
-                            )
+                            newEpisode(ep.id ?: "") {
+                                this.name = ep.name
+                                this.season = season.seasonNumber
+                                this.episode = ep.episodeNumber
+                                this.posterUrl = ep.stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+                            }
                         )
                     }
                 } else {
@@ -151,13 +139,12 @@ class IdlixProvider : MainAPI() {
                     val seasonResponse = app.get(seasonUrl).parsedSafe<Season>()
                     seasonResponse?.episodes?.forEach { ep ->
                         episodes.add(
-                            Episode(
-                                data = ep.id ?: "",
-                                name = ep.name,
-                                season = season.seasonNumber,
-                                episode = ep.episodeNumber,
-                                posterUrl = ep.stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
-                            )
+                            newEpisode(ep.id ?: "") {
+                                this.name = ep.name
+                                this.season = season.seasonNumber
+                                this.episode = ep.episodeNumber
+                                this.posterUrl = ep.stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+                            }
                         )
                     }
                 }
@@ -169,7 +156,7 @@ class IdlixProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.score = rating
+                this.score = Score.from100(ratingStr)
                 addActors(actors)
                 addTrailer(trailer)
             }
@@ -180,22 +167,21 @@ class IdlixProvider : MainAPI() {
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.score = rating
+                this.score = Score.from100(ratingStr)
                 addActors(actors)
                 addTrailer(trailer)
             }
         }
     }
 
-    // FUNGSI PEMUTAR VIDEO (INI AKAN KITA UJI SELANJUTNYA)
+    // FUNGSI PEMUTAR VIDEO (Hampir pasti gagal sampai kita update nanti)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Kode lama ini DIBIARKAN DULU SESUAI JANJI, tapi 100% ini bakal error
-        // karena Idlix sudah tidak pakai sistem wp-admin/admin-ajax.php lagi.
+        // Kode lama dipertahankan sementara
         val document = app.get(data).document
         val scriptRegex = """window\.idlixNonce=['"]([a-f0-9]+)['"].*?window\.idlixTime=(\d+).*?""".toRegex(RegexOption.DOT_MATCHES_ALL)
         val script = document.select("script:containsData(window.idlix)").toString()
@@ -247,7 +233,7 @@ class IdlixProvider : MainAPI() {
         return this.replace("\"", "").replace("\\", "")
     }
 
-    // --- KUMPULAN DATA KELAS API (BARU) ---
+    // --- KUMPULAN DATA KELAS API ---
     data class IdlixApiResponse(
         @JsonProperty("data") val data: List<IdlixItem>? = null,
         @JsonProperty("pagination") val pagination: Pagination? = null
@@ -306,7 +292,7 @@ class IdlixProvider : MainAPI() {
         @JsonProperty("stillPath") val stillPath: String? = null
     )
 
-    // --- KUMPULAN DATA KELAS EXTRACTOR (TETAP DIPERTAHANKAN) ---
+    // --- KUMPULAN DATA KELAS EXTRACTOR ---
     data class ResponseSource(
         @JsonProperty("hls") val hls: Boolean,
         @JsonProperty("videoSource") val videoSource: String,
