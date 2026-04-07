@@ -1,4 +1,4 @@
-package com.IdlixProvider
+package com.michat88
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
@@ -23,6 +23,7 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
+    // Menggunakan API baru
     override val mainPage = mainPageOf(
         "$mainUrl/api/movies?sort=createdAt&limit=36&page=" to "Movie Terbaru",
         "$mainUrl/api/series?sort=createdAt&limit=36&page=" to "Series Terbaru",
@@ -36,7 +37,7 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // --- BERANDA ---
+    // --- BERANDA: Menggunakan algoritma deteksi otomatis Json yang anti error ---
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -45,17 +46,21 @@ class IdlixProvider : MainAPI() {
         val responseText = app.get(url).text
         
         var hasNextPage = false
-        val items = try {
-            // Algoritma Pintar: Cek bentuk JSON yang dikirimkan oleh API
+        val items = arrayListOf<IdlixItem>()
+        
+        try {
             if (responseText.trim().startsWith("[")) {
-                AppUtils.parseJson<List<IdlixItem>>(responseText)
+                AppUtils.tryParseJson<List<IdlixItem>>(responseText)?.let { items.addAll(it) }
             } else {
-                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
-                hasNextPage = (parsed.pagination?.page ?: 1) < (parsed.pagination?.totalPages ?: 1)
-                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
+                AppUtils.tryParseJson<IdlixApiResponse>(responseText)?.let { parsed ->
+                    hasNextPage = (parsed.pagination?.page ?: 1) < (parsed.pagination?.totalPages ?: 1)
+                    parsed.data?.let { items.addAll(it) }
+                    parsed.results?.let { items.addAll(it) }
+                    parsed.items?.let { items.addAll(it) }
+                }
             }
         } catch (e: Exception) {
-            emptyList()
+            // Abaikan error parsing agar aplikasi tidak crash
         }
         
         val home = items.mapNotNull { item ->
@@ -64,6 +69,7 @@ class IdlixProvider : MainAPI() {
             val type = if (item.contentType?.contains("series", true) == true) TvType.TvSeries else TvType.Movie
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
             
+            // Pasang poster dari TMDB dan cegah link null
             val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" 
                             else "https://image.tmdb.org/t/p/w342${item.posterPath}"
             
@@ -82,16 +88,19 @@ class IdlixProvider : MainAPI() {
         val url = "$mainUrl/api/search?q=$encodedQuery&page=1&limit=36"
         
         val responseText = app.get(url).text
-        val items = try {
+        val items = arrayListOf<IdlixItem>()
+        
+        try {
             if (responseText.trim().startsWith("[")) {
-                AppUtils.parseJson<List<IdlixItem>>(responseText)
+                AppUtils.tryParseJson<List<IdlixItem>>(responseText)?.let { items.addAll(it) }
             } else {
-                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
-                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
+                AppUtils.tryParseJson<IdlixApiResponse>(responseText)?.let { parsed ->
+                    parsed.data?.let { items.addAll(it) }
+                    parsed.results?.let { items.addAll(it) }
+                    parsed.items?.let { items.addAll(it) }
+                }
             }
-        } catch (e: Exception) {
-            emptyList()
-        }
+        } catch (e: Exception) {}
 
         return items.mapNotNull { item ->
             val title = item.title ?: item.name ?: return@mapNotNull null
@@ -123,7 +132,7 @@ class IdlixProvider : MainAPI() {
         val plot = response.overview
         val year = (response.releaseDate ?: response.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
         
-        val ratingStr = response.voteAverage?.toFloatOrNull()?.times(10)?.toInt()?.toString()
+        val ratingStr = response.voteAverage
         val trailer = response.trailerUrl
         val tags = response.genres?.mapNotNull { it.name }
         
@@ -134,7 +143,7 @@ class IdlixProvider : MainAPI() {
             Actor(actorName, profile)
         }
 
-        return if (isSeries) {
+        if (isSeries) {
             val episodes = arrayListOf<Episode>()
             val firstSeasonId = response.firstSeason?.id
             
@@ -175,7 +184,7 @@ class IdlixProvider : MainAPI() {
                 }
             }
             
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
                 this.year = year
@@ -187,7 +196,7 @@ class IdlixProvider : MainAPI() {
             }
         } else {
             val movieId = response.id ?: url
-            newMovieLoadResponse(title, url, TvType.Movie, movieId) {
+            return newMovieLoadResponse(title, url, TvType.Movie, movieId) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
                 this.year = year
@@ -200,14 +209,13 @@ class IdlixProvider : MainAPI() {
         }
     }
 
+    // --- PEMUTAR VIDEO (Perlu diuji setelah build sukses) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // PERHATIAN: Kode video lama dipertahankan. Ini akan dirombak 
-        // kalau kamu sudah mendapatkan log API Play Video dari Idlix yang baru.
         val document = app.get(data).document
         val scriptRegex = """window\.idlixNonce=['"]([a-f0-9]+)['"].*?window\.idlixTime=(\d+).*?""".toRegex(RegexOption.DOT_MATCHES_ALL)
         val script = document.select("script:containsData(window.idlix)").toString()
@@ -226,16 +234,17 @@ class IdlixProvider : MainAPI() {
             ).text
             
             try {
-                val json = AppUtils.parseJson<ResponseHash>(responseText)
+                val json = AppUtils.tryParseJson<ResponseHash>(responseText) ?: return@amap
                 val embedUrl = json.embed_url
                 val key = json.key
                 
                 val metrixJson = app.get(embedUrl).text
-                val metrix = AppUtils.parseJson<AesData>(metrixJson).m
+                val metrix = AppUtils.tryParseJson<AesData>(metrixJson)?.m ?: return@amap
                 
                 val password = createKey(key, metrix)
                 val decrypted = AesHelper.cryptoAESHandler(embedUrl, password.toByteArray(), false)?.fixBloat() ?: return@amap
                 
+                // ERROR .toJson() SUDAH DIHAPUS
                 Log.d("adixtream", decrypted)
 
                 when {
@@ -266,90 +275,90 @@ class IdlixProvider : MainAPI() {
     private fun String.fixBloat(): String {
         return this.replace("\"", "").replace("\\", "")
     }
+
+    // ============================================================================
+    // DATA CLASSES DITARUH KEMBALI DI DALAM CLASS UTAMA 
+    // Agar import di Extractor.kt ("com.michat88.IdlixProvider.ResponseSource") berjalan normal!
+    // ============================================================================
+
+    data class IdlixApiResponse(
+        @JsonProperty("data") val data: List<IdlixItem>? = null,
+        @JsonProperty("results") val results: List<IdlixItem>? = null,
+        @JsonProperty("items") val items: List<IdlixItem>? = null,
+        @JsonProperty("pagination") val pagination: Pagination? = null
+    )
+
+    data class Pagination(
+        @JsonProperty("page") val page: Int? = null,
+        @JsonProperty("totalPages") val totalPages: Int? = null
+    )
+
+    data class IdlixItem(
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("slug") val slug: String? = null,
+        @JsonProperty("posterPath") val posterPath: String? = null,
+        @JsonProperty("contentType") val contentType: String? = null,
+        @JsonProperty("quality") val quality: String? = null
+    )
+
+    data class IdlixDetailResponse(
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("overview") val overview: String? = null,
+        @JsonProperty("posterPath") val posterPath: String? = null,
+        @JsonProperty("backdropPath") val backdropPath: String? = null,
+        @JsonProperty("voteAverage") val voteAverage: String? = null,
+        @JsonProperty("firstAirDate") val firstAirDate: String? = null,
+        @JsonProperty("releaseDate") val releaseDate: String? = null,
+        @JsonProperty("trailerUrl") val trailerUrl: String? = null,
+        @JsonProperty("genres") val genres: List<Genre>? = null,
+        @JsonProperty("cast") val cast: List<Cast>? = null,
+        @JsonProperty("seasons") val seasons: List<Season>? = null,
+        @JsonProperty("firstSeason") val firstSeason: Season? = null
+    )
+
+    data class Genre(@JsonProperty("name") val name: String? = null)
+
+    data class Cast(
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("profilePath") val profilePath: String? = null
+    )
+
+    data class Season(
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("seasonNumber") val seasonNumber: Int? = null,
+        @JsonProperty("episodes") val episodes: List<EpisodeData>? = null
+    )
+
+    data class EpisodeData(
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("episodeNumber") val episodeNumber: Int? = null,
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("stillPath") val stillPath: String? = null
+    )
+
+    // Data Class yang dipanggil oleh Extractor.kt (JANGAN DIHAPUS / DIPINDAH)
+    data class ResponseSource(
+        @JsonProperty("hls") val hls: Boolean = false,
+        @JsonProperty("videoSource") val videoSource: String = "",
+        @JsonProperty("securedLink") val securedLink: String? = null
+    )
+
+    data class Tracks(
+        @JsonProperty("kind") val kind: String? = null,
+        @JsonProperty("file") val file: String = "",
+        @JsonProperty("label") val label: String? = null
+    )
+
+    data class ResponseHash(
+        @JsonProperty("embed_url") val embed_url: String = "",
+        @JsonProperty("key") val key: String = ""
+    )
+
+    data class AesData(
+        @JsonProperty("m") val m: String = ""
+    )
 }
-
-// ============================================================================
-// DATA CLASSES DI LUAR CLASS UTAMA (INI KUNCI AGAR TIDAK ERROR)
-// ============================================================================
-
-data class IdlixApiResponse(
-    @JsonProperty("data") val data: List<IdlixItem>? = null,
-    @JsonProperty("results") val results: List<IdlixItem>? = null,
-    @JsonProperty("items") val items: List<IdlixItem>? = null,
-    @JsonProperty("pagination") val pagination: Pagination? = null
-)
-
-data class Pagination(
-    @JsonProperty("page") val page: Int? = null,
-    @JsonProperty("totalPages") val totalPages: Int? = null
-)
-
-data class IdlixItem(
-    @JsonProperty("id") val id: String? = null,
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("slug") val slug: String? = null,
-    @JsonProperty("posterPath") val posterPath: String? = null,
-    @JsonProperty("contentType") val contentType: String? = null,
-    @JsonProperty("quality") val quality: String? = null,
-    @JsonProperty("voteAverage") val voteAverage: String? = null
-)
-
-data class IdlixDetailResponse(
-    @JsonProperty("id") val id: String? = null,
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("overview") val overview: String? = null,
-    @JsonProperty("posterPath") val posterPath: String? = null,
-    @JsonProperty("backdropPath") val backdropPath: String? = null,
-    @JsonProperty("voteAverage") val voteAverage: String? = null,
-    @JsonProperty("firstAirDate") val firstAirDate: String? = null,
-    @JsonProperty("releaseDate") val releaseDate: String? = null,
-    @JsonProperty("trailerUrl") val trailerUrl: String? = null,
-    @JsonProperty("genres") val genres: List<Genre>? = null,
-    @JsonProperty("cast") val cast: List<Cast>? = null,
-    @JsonProperty("seasons") val seasons: List<Season>? = null,
-    @JsonProperty("firstSeason") val firstSeason: Season? = null
-)
-
-data class Genre(@JsonProperty("name") val name: String? = null)
-
-data class Cast(
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("profilePath") val profilePath: String? = null
-)
-
-data class Season(
-    @JsonProperty("id") val id: String? = null,
-    @JsonProperty("seasonNumber") val seasonNumber: Int? = null,
-    @JsonProperty("episodes") val episodes: List<EpisodeData>? = null
-)
-
-data class EpisodeData(
-    @JsonProperty("id") val id: String? = null,
-    @JsonProperty("episodeNumber") val episodeNumber: Int? = null,
-    @JsonProperty("name") val name: String? = null,
-    @JsonProperty("stillPath") val stillPath: String? = null
-)
-
-// Data Kelas yang diwajibkan oleh Extractor.kt
-data class ResponseSource(
-    @JsonProperty("hls") val hls: Boolean = false,
-    @JsonProperty("videoSource") val videoSource: String = "",
-    @JsonProperty("securedLink") val securedLink: String? = null
-)
-
-data class Tracks(
-    @JsonProperty("kind") val kind: String? = null,
-    @JsonProperty("file") val file: String = "",
-    @JsonProperty("label") val label: String? = null
-)
-
-data class ResponseHash(
-    @JsonProperty("embed_url") val embed_url: String = "",
-    @JsonProperty("key") val key: String = ""
-)
-
-data class AesData(
-    @JsonProperty("m") val m: String = ""
-)
