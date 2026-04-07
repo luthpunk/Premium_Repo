@@ -21,6 +21,12 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
+    // --- CONTEKAN TMDB DARI ADICINEMAX21 ---
+    companion object {
+        private const val tmdbAPI = "https://api.themoviedb.org/3"
+        private const val apiKey = "b030404650f279792a8d3287232358e3"
+    }
+
     override val mainPage = mainPageOf(
         "$mainUrl/api/movies?sort=createdAt&limit=36&page=" to "Movie Terbaru",
         "$mainUrl/api/trending/top?contentType=movie&limit=36&period=7d&page=" to "Trending Movies",
@@ -153,47 +159,53 @@ class IdlixProvider : MainAPI() {
 
         return if (isSeries) {
             val episodes = arrayListOf<Episode>()
-            val seasonNamesList = mutableListOf<SeasonData>()
             
-            // Proses Jika API menyediakan struktur seasons
-            if (!response.seasons.isNullOrEmpty()) {
-                response.seasons.forEach { season ->
+            // --- KEKUATAN TMDB (SEPERTI ADICINEMAX21) ---
+            try {
+                // Cari ID TMDB berdasarkan Judul dan Tahun
+                val searchUrl = "$tmdbAPI/search/tv?api_key=$apiKey&query=${java.net.URLEncoder.encode(title, "utf-8")}&first_air_date_year=$year&language=id-ID"
+                val searchRes = app.get(searchUrl).parsedSafe<TmdbSearch>()
+                val tmdbId = searchRes?.results?.firstOrNull()?.id
+                
+                if (tmdbId != null) {
+                    val tvDetail = app.get("$tmdbAPI/tv/$tmdbId?api_key=$apiKey&language=id-ID").parsedSafe<TmdbTvDetail>()
+                    
+                    tvDetail?.seasons?.forEach { season ->
+                        val sNum = season.season_number ?: return@forEach
+                        if (sNum == 0) return@forEach // Lewati episode spesial
+                        
+                        val seasonUrl = "$tmdbAPI/tv/$tmdbId/season/$sNum?api_key=$apiKey&language=id-ID"
+                        val seasonData = app.get(seasonUrl).parsedSafe<TmdbSeasonDetail>()
+                        
+                        seasonData?.episodes?.forEach { eps ->
+                            val eNum = eps.episode_number ?: return@forEach
+                            val epPoster = eps.still_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+                            
+                            // FORMAT BARU: tipe | slug | season | episode | url
+                            val loadData = "episode|$slug|$sNum|$eNum|$url"
+                            
+                            episodes.add(newEpisode(loadData) {
+                                this.name = eps.name
+                                this.season = sNum
+                                this.episode = eNum
+                                this.posterUrl = epPoster
+                                this.description = eps.overview
+                            })
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("adixtream", "Gagal fetch TMDB: ${e.message}")
+            }
+            
+            // --- FALLBACK KE IDLIX (Jika TMDB gagal/tidak ketemu) ---
+            if (episodes.isEmpty()) {
+                response.seasons?.forEach { season ->
                     val seasonNumber = season.seasonNumber ?: return@forEach
-                    
-                    // Daftarkan nama season secara eksplisit sesuai kaidah MainAPI.kt
-                    seasonNamesList.add(SeasonData(seasonNumber, "Season $seasonNumber"))
-                    
                     var epList = season.episodes
                     
-                    // Fallback 1: Ambil dari object firstSeason
                     if (epList.isNullOrEmpty() && season.id == response.firstSeason?.id) {
                         epList = response.firstSeason?.episodes
-                    }
-                    
-                    // Fallback 2: Tembak API dinamis untuk mendapatkan episode per season
-                    if (epList.isNullOrEmpty() && season.id != null) {
-                        val endpoints = listOf(
-                            "$mainUrl/api/seasons/${season.id}",
-                            "$mainUrl/api/series/$slug/seasons/$seasonNumber",
-                            "$mainUrl/api/series/$slug/season/$seasonNumber"
-                        )
-                        
-                        for (endpoint in endpoints) {
-                            try {
-                                val seasonRes = app.get(endpoint).parsedSafe<Season>()
-                                if (!seasonRes?.episodes.isNullOrEmpty()) {
-                                    epList = seasonRes?.episodes
-                                    break
-                                }
-                            } catch (e: Exception) {}
-                        }
-                        
-                        // Coba tembak langsung ke endpoint /episodes
-                        if (epList.isNullOrEmpty()) {
-                            try {
-                                epList = app.get("$mainUrl/api/seasons/${season.id}/episodes").parsedSafe<List<EpisodeData>>()
-                            } catch (e: Exception) {}
-                        }
                     }
                     
                     epList?.forEach { ep ->
@@ -210,23 +222,6 @@ class IdlixProvider : MainAPI() {
                         })
                     }
                 }
-            } 
-            // Fallback Darurat: Beberapa API menaruh episode langsung di root tanpa season
-            else if (!response.episodes.isNullOrEmpty()) {
-                seasonNamesList.add(SeasonData(1, "Season 1"))
-                response.episodes.forEach { ep ->
-                    val epId = ep.id ?: return@forEach
-                    val still = ep.stillPath
-                    val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                    val loadData = "episode|$epId|$url"
-                    
-                    episodes.add(newEpisode(loadData) {
-                        this.name = ep.name
-                        this.season = 1
-                        this.episode = ep.episodeNumber
-                        this.posterUrl = epPoster
-                    })
-                }
             }
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -237,8 +232,6 @@ class IdlixProvider : MainAPI() {
                 this.tags = tags
                 this.score = Score.from10(ratingStr)
                 this.recommendations = recommendationsList
-                // Menggunakan fungsi bawaan dari MainAPI.kt untuk mendeklarasikan list Season
-                addSeasonNames(seasonNamesList) 
                 addActors(actors)
                 addTrailer(trailer)
             }
@@ -274,11 +267,40 @@ class IdlixProvider : MainAPI() {
             val rawContentType = parts.getOrNull(0) ?: "movie"
             val contentType = rawContentType.substringAfterLast("/")
             
-            val contentId = parts.getOrNull(1) ?: data 
-            val refererUrl = parts.getOrNull(2) ?: "$mainUrl/"
+            var contentId = parts.getOrNull(1) ?: data 
+            val refererUrl = parts.lastOrNull() ?: "$mainUrl/"
+            
+            // --- JIKA BERASAL DARI TMDB (Memiliki 5 bagian) ---
+            if (contentType == "episode" && parts.size >= 4) {
+                val slug = parts[1]
+                val sNum = parts[2]
+                val eNum = parts[3]
+                
+                val epUrl = "$mainUrl/series/$slug/season/$sNum/episode/$eNum"
+                try {
+                    val html = app.get(epUrl).text
+                    
+                    // Kita cari blok JSON di halaman yang mengandung "episodeNumber":X
+                    val blockRegex = """\{[^{}]*"episodeNumber"\s*:\s*$eNum[^{}]*\}""".toRegex()
+                    val blockMatch = blockRegex.find(html)?.value
+                    
+                    // Ekstrak UUID idlix (contentId) dari blok JSON tersebut
+                    if (blockMatch != null) {
+                        val idRegex = """"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex()
+                        contentId = idRegex.find(blockMatch)?.groupValues?.get(1) ?: contentId
+                    } else {
+                        // Fallback kasar
+                        val fallbackRegex = """"episodeNumber"\s*:\s*$eNum.*?"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex()
+                        contentId = fallbackRegex.find(html)?.groupValues?.get(1) ?: contentId
+                    }
+                } catch (e: Exception) {
+                    Log.e("adixtream", "Gagal scrape UUID dari HTML: ${e.message}")
+                }
+            }
             
             Log.d("adixtream", "Tipe: $contentType, ID: $contentId, Referer: $refererUrl")
 
+            // 2. Tahap 0: Meminta Clearance Token
             val clearanceText = app.post(
                 url = "$mainUrl/api/adblock/clearance",
                 headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
@@ -293,6 +315,7 @@ class IdlixProvider : MainAPI() {
             Log.d("adixtream", "Clearance Token: $tokenClear")
             if (tokenClear.isNullOrEmpty()) return false
 
+            // 3. Tahap 1: Meminta Challenge & Signature
             val challengeRes = app.post(
                 url = "$mainUrl/api/watch/challenge",
                 json = mapOf(
@@ -309,10 +332,12 @@ class IdlixProvider : MainAPI() {
             
             Log.d("adixtream", "Challenge: $challenge, Diff: $difficulty")
 
+            // 4. Tahap 2: Menambang Nonce (Sangat Cepat via Byte Level)
             val nonce = mineNonce(challenge, difficulty)
             Log.d("adixtream", "Nonce ketemu: $nonce")
             if (nonce == null) return false
 
+            // 5. Tahap 3: Kirim Solusi (Solve)
             val solveRes = app.post(
                 url = "$mainUrl/api/watch/solve",
                 json = mapOf(
@@ -327,6 +352,7 @@ class IdlixProvider : MainAPI() {
             val fullEmbedUrl = if (embedPath.startsWith("/")) "$mainUrl$embedPath" else embedPath
             Log.d("adixtream", "Eksekusi Embed URL: $fullEmbedUrl")
             
+            // 6. Tahap 4: Eksekusi Embed URL untuk mendapatkan Iframe
             val embedHtml = app.get(fullEmbedUrl, headers = mapOf("Referer" to refererUrl)).document
             
             var iframeSrc = embedHtml.selectFirst("iframe")?.attr("src") 
@@ -464,4 +490,17 @@ data class ChallengeResponse(
 
 data class SolveResponse(
     @JsonProperty("embedUrl") val embedUrl: String? = null
+)
+
+// --- TMDB DATA CLASSES ---
+data class TmdbSearch(@JsonProperty("results") val results: List<TmdbResult>? = null)
+data class TmdbResult(@JsonProperty("id") val id: Int? = null)
+data class TmdbTvDetail(@JsonProperty("seasons") val seasons: List<TmdbSeason>? = null)
+data class TmdbSeason(@JsonProperty("season_number") val season_number: Int? = null)
+data class TmdbSeasonDetail(@JsonProperty("episodes") val episodes: List<TmdbEpisode>? = null)
+data class TmdbEpisode(
+    @JsonProperty("episode_number") val episode_number: Int? = null,
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("overview") val overview: String? = null,
+    @JsonProperty("still_path") val still_path: String? = null
 )
