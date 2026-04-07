@@ -10,9 +10,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
 import java.net.URI
-import java.net.URLDecoder
 
-// Kelas utama yang bertugas mengambil data (scraping) langsung dari website
 class IdlixProvider : MainAPI() {
     override var mainUrl = "https://z1.idlixku.com"
     private var directUrl = mainUrl
@@ -27,111 +25,62 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // Daftar menu/kategori yang sudah disesuaikan dengan routing website baru
+    // Menggunakan jalur API baru dari Idlix!
     override val mainPage = mainPageOf(
-        "$mainUrl/movie/page/" to "Movie",
-        "$mainUrl/series/page/" to "Series",
-        "$mainUrl/genre/horror/page/" to "Horror",
-        "$mainUrl/genre/adventure/page/" to "Adventure"
+        "$mainUrl/api/movies?sort=createdAt&limit=36&page=" to "Movie Terbaru",
+        "$mainUrl/api/series?sort=createdAt&limit=36&page=" to "Series Terbaru",
+        "$mainUrl/api/trending/top?contentType=movie&limit=36&period=7d&page=" to "Trending Movies",
+        "$mainUrl/api/trending/top?contentType=series&limit=36&period=7d&page=" to "Trending Series"
     )
 
-    // Fungsi utilitas untuk mengambil alamat dasar (base URL)
     private fun getBaseUrl(url: String): String {
         return URI(url).let {
             "${it.scheme}://${it.host}"
         }
     }
 
-    // FUNGSI BARU: Pengekstrak Poster Cerdas (Bypass Next.js Image, Lazy Loading, & TMDB)
-    private fun Element?.getPosterUrl(): String {
-        if (this == null) return ""
-        
-        // Cek srcset terlebih dahulu (Next.js sering menaruh gambar hi-res di sini)
-        val srcset = this.attr("srcset").split(",").lastOrNull()?.split(" ")?.firstOrNull()
-        
-        var url = srcset.takeIf { !it.isNullOrEmpty() }
-            ?: this.attr("data-src").takeIf { it.isNotEmpty() }
-            ?: this.attr("data-lazy-src").takeIf { it.isNotEmpty() }
-            ?: this.attr("src").takeIf { it.isNotEmpty() }
-            ?: ""
-            
-        // Jika formatnya Next.js Image, kita decode URL aslinya
-        if (url.contains("/_next/image?url=")) {
-            try {
-                val encodedUrl = url.substringAfter("url=").substringBefore("&")
-                url = URLDecoder.decode(encodedUrl, "UTF-8")
-            } catch (e: Exception) {
-                Log.d("Idlix", "Gagal decode URL Next.js: ${e.message}")
-            }
-        }
-
-        // Perbaiki jika link berbentuk protocol-relative (//image.tmdb.org/...)
-        if (url.startsWith("//")) {
-            url = "https:$url"
-        }
-        
-        // Perbaiki jika link langsung dari path TMDB tanpa domain
-        if (url.startsWith("/t/p/")) {
-            url = "https://image.tmdb.org$url"
-        }
-        
-        return url
-    }
-
-    // Fungsi untuk mengambil dan menyusun daftar film/seri untuk halaman utama
+    // FUNGSI BARU: Mengambil data langsung dari JSON API Idlix
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = request.data.split("?")
-        val nonPaged = request.name == "Featured" && page <= 1
-        val req = if (nonPaged) {
-            app.get(request.data)
-        } else {
-            app.get("${url.first()}$page/?${url.lastOrNull()}")
-        }
-        mainUrl = getBaseUrl(req.url)
-        val document = req.document
+        // Menyambungkan URL API dengan nomor halaman (1, 2, 3, dst)
+        val url = request.data + page
         
-        val home = (if (nonPaged) {
-            document.select("div.items.featured article")
-        } else {
-            document.select("div.items.full article, div#archive-content article")
-        }).mapNotNull {
-            it.toSearchResult()
-        }
-        return newHomePageResponse(request.name, home)
+        // Mem-parsing data JSON menjadi Object
+        val response = app.get(url).parsedSafe<IdlixApiResponse>()
+        
+        val home = response?.data?.mapNotNull { item ->
+            val title = item.title ?: item.name ?: return@mapNotNull null
+            val slug = item.slug ?: return@mapNotNull null
+            
+            // Menentukan tipe konten
+            val type = if (item.contentType?.contains("series") == true) TvType.TvSeries else TvType.Movie
+            
+            // Membentuk URL halaman detail
+            val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
+            
+            // Menyusun gambar dari TMDB langsung! (w342 adalah resolusi standar poster)
+            val posterUrl = item.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
+            
+            newMovieSearchResponse(title, href, type) {
+                this.posterUrl = posterUrl
+                this.quality = getQualityFromString(item.quality ?: "")
+            }
+        } ?: emptyList()
+
+        // Mengecek apakah masih ada halaman selanjutnya (untuk infinite scroll)
+        val hasNextPage = (response?.pagination?.page ?: 1) < (response?.pagination?.totalPages ?: 1)
+        
+        return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
 
-    private fun getProperLink(uri: String): String {
-        return when {
-            uri.contains("/episode/") -> {
-                var title = uri.substringAfter("$mainUrl/episode/")
-                title = Regex("(.+?)-season").find(title)?.groupValues?.get(1).toString()
-                "$mainUrl/tvseries/$title"
-            }
-            uri.contains("/season/") -> {
-                var title = uri.substringAfter("$mainUrl/season/")
-                title = Regex("(.+?)-season").find(title)?.groupValues?.get(1).toString()
-                "$mainUrl/tvseries/$title"
-            }
-            else -> uri
-        }
-    }
-
-    private fun Element.toSearchResult(): SearchResponse {
-        val title = this.selectFirst("h3 > a")?.text()?.replace(Regex("\\(\\d{4}\\)"), "")?.trim() ?: "Unknown"
-        val href = getProperLink(this.selectFirst("h3 > a")?.attr("href") ?: "")
-        
-        // Menggunakan helper baru kita untuk poster
-        val posterUrl = this.selectFirst("div.poster > img").getPosterUrl()
-        val quality = getQualityFromString(this.select("span.quality").text())
-        
-        return newMovieSearchResponse(title, href, TvType.Movie) {
-            this.posterUrl = posterUrl
-            this.quality = quality
-        }
-    }
+    // -----------------------------------------------------------
+    // CATATAN PENTING:
+    // Fungsi search() dan load() di bawah ini mungkin masih menggunakan 
+    // sistem lama (HTML Scraping). Jika pencarian atau halaman detail film 
+    // masih bermasalah, kita akan ganti juga ke versi API.
+    // -----------------------------------------------------------
 
     override suspend fun search(query: String): List<SearchResponse> {
         val req = app.get("$mainUrl/search/$query")
@@ -140,10 +89,8 @@ class IdlixProvider : MainAPI() {
         
         return document.select("div.result-item").map {
             val title = it.selectFirst("div.title > a")?.text()?.replace(Regex("\\(\\d{4}\\)"), "")?.trim() ?: "Unknown"
-            val href = getProperLink(it.selectFirst("div.title > a")?.attr("href") ?: "")
-            
-            // Menggunakan helper baru kita untuk poster pencarian
-            val posterUrl = it.selectFirst("img").getPosterUrl()
+            val href = it.selectFirst("div.title > a")?.attr("href") ?: ""
+            val posterUrl = it.selectFirst("img")?.attr("src") ?: ""
             
             newMovieSearchResponse(title, href, TvType.TvSeries) {
                 this.posterUrl = posterUrl
@@ -157,11 +104,7 @@ class IdlixProvider : MainAPI() {
         val document = request.document
         
         val title = document.selectFirst("div.data > h1")?.text()?.replace(Regex("\\(\\d{4}\\)"), "")?.trim().toString()
-        val images = document.select("div.g-item")
-
-        // Menggunakan helper untuk poster di halaman detail
-        val poster = images.shuffled().firstOrNull()?.selectFirst("a")?.attr("href")
-            ?: document.selectFirst("div.poster > img").getPosterUrl()
+        val poster = document.select("div.poster > img").attr("src")
             
         val tags = document.select("div.sgeneros > a").map { it.text() }
         val year = Regex(",\\s?(\\d+)").find(document.select("span.date").text().trim())?.groupValues?.get(1)?.toIntOrNull()
@@ -179,9 +122,7 @@ class IdlixProvider : MainAPI() {
         val recommendations = document.select("div.owl-item").map {
             val recName = it.selectFirst("a")?.attr("href")?.removeSuffix("/")?.split("/")?.last() ?: ""
             val recHref = it.selectFirst("a")?.attr("href") ?: ""
-            
-            // Menggunakan helper untuk poster rekomendasi
-            val recPosterUrl = it.selectFirst("img").getPosterUrl()
+            val recPosterUrl = it.selectFirst("img")?.attr("src").toString()
             
             newTvSeriesSearchResponse(recName, recHref, TvType.TvSeries) {
                 this.posterUrl = recPosterUrl
@@ -192,10 +133,7 @@ class IdlixProvider : MainAPI() {
             val episodes = document.select("ul.episodios > li").map {
                 val href = it.select("a").attr("href") ?: ""
                 val name = fixTitle(it.select("div.episodiotitle > a").text().trim())
-                
-                // Menggunakan helper untuk gambar episode
-                val image = it.selectFirst("div.imagen > img").getPosterUrl()
-                
+                val image = it.select("div.imagen > img").attr("src") ?: ""
                 val episode = it.select("div.numerando").text().replace(" ", "").split("-").last().toIntOrNull()
                 val season = it.select("div.numerando").text().replace(" ", "").split("-").first().toIntOrNull()
                 
@@ -236,8 +174,8 @@ class IdlixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // ... Kode loadLinks (dekripsi AES) dibiarkan utuh
         val document = app.get(data).document
-        
         val scriptRegex = """window\.idlixNonce=['"]([a-f0-9]+)['"].*?window\.idlixTime=(\d+).*?""".toRegex(RegexOption.DOT_MATCHES_ALL)
         val script = document.select("script:containsData(window.idlix)").toString()
         val match = scriptRegex.find(script)
@@ -245,17 +183,11 @@ class IdlixProvider : MainAPI() {
         val idlixTime = match?.groups?.get(2)?.value ?: ""
 
         document.select("ul#playeroptionsul > li").map {
-            Triple(
-                it.attr("data-post"),
-                it.attr("data-nume"),
-                it.attr("data-type")
-            )
+            Triple(it.attr("data-post"), it.attr("data-nume"), it.attr("data-type"))
         }.amap { (id, nume, type) ->
             val json = app.post(
                 url = "$directUrl/wp-admin/admin-ajax.php",
-                data = mapOf(
-                    "action" to "doo_player_ajax", "post" to id, "nume" to nume, "type" to type, "_n" to idlixNonce, "_p" to id, "_t" to idlixTime
-                ),
+                data = mapOf("action" to "doo_player_ajax", "post" to id, "nume" to nume, "type" to type, "_n" to idlixNonce, "_p" to id, "_t" to idlixTime),
                 referer = data,
                 headers = mapOf("Accept" to "*/*", "X-Requested-With" to "XMLHttpRequest")
             ).parsedSafe<ResponseHash>() ?: return@amap
@@ -263,7 +195,7 @@ class IdlixProvider : MainAPI() {
             val metrix = AppUtils.parseJson<AesData>(json.embed_url).m
             val password = createKey(json.key, metrix)
             val decrypted = AesHelper.cryptoAESHandler(json.embed_url, password.toByteArray(), false)?.fixBloat() ?: return@amap
-                    
+            
             Log.d("adixtream", decrypted.toJson())
 
             when {
@@ -279,20 +211,13 @@ class IdlixProvider : MainAPI() {
         var n = ""
         var reversedM = m.split("").reversed().joinToString("")
         while (reversedM.length % 4 != 0) reversedM += "="
-        val decodedBytes = try {
-            base64Decode(reversedM)
-        } catch (_: Exception) {
-            return ""
-        }
+        val decodedBytes = try { base64Decode(reversedM) } catch (_: Exception) { return "" }
         val decodedM = String(decodedBytes.toCharArray())
         for (s in decodedM.split("|")) {
             try {
                 val index = Integer.parseInt(s)
-                if (index in rList.indices) {
-                    n += "\\x" + rList[index]
-                }
-            } catch (_: Exception) {
-            }
+                if (index in rList.indices) n += "\\x" + rList[index]
+            } catch (_: Exception) {}
         }
         return n
     }
@@ -301,18 +226,29 @@ class IdlixProvider : MainAPI() {
         return this.replace("\"", "").replace("\\", "")
     }
 
-    data class ResponseSource(
-        @JsonProperty("hls") val hls: Boolean,
-        @JsonProperty("videoSource") val videoSource: String,
-        @JsonProperty("securedLink") val securedLink: String?,
+    // --- DATA KELAS BARU UNTUK API ---
+    data class IdlixApiResponse(
+        @JsonProperty("data") val data: List<IdlixItem>? = null,
+        @JsonProperty("pagination") val pagination: Pagination? = null
     )
 
-    data class Tracks(
-        @JsonProperty("kind") val kind: String?,
-        @JsonProperty("file") val file: String,
-        @JsonProperty("label") val label: String?,
+    data class Pagination(
+        @JsonProperty("page") val page: Int?,
+        @JsonProperty("totalPages") val totalPages: Int?
     )
 
+    data class IdlixItem(
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("slug") val slug: String? = null,
+        @JsonProperty("posterPath") val posterPath: String? = null,
+        @JsonProperty("contentType") val contentType: String? = null,
+        @JsonProperty("quality") val quality: String? = null,
+        @JsonProperty("voteAverage") val voteAverage: String? = null
+    )
+
+    // --- DATA KELAS LAMA ---
     data class ResponseHash(
         @JsonProperty("embed_url") val embed_url: String,
         @JsonProperty("key") val key: String,
