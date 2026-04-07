@@ -3,11 +3,8 @@ package com.IdlixProvider
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.ExtractorApi
-import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class Jeniusplay : ExtractorApi() {
     override var name = "Jeniusplay"
@@ -21,11 +18,10 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            // 1. Ekstrak HASH dari format URL (/video/HASH)
+            // 1. Ekstrak HASH dari URL baru (/video/HASH)
             val hash = url.split("/").last().substringAfter("data=")
-            Log.d("adixtream", "Hash Jeniusplay: $hash")
-
-            // 2. Ambil HTML mentah untuk menyedot Subtitle
+            
+            // 2. Ambil HTML mentah untuk Subtitle
             val htmlContent = app.get(url, referer = referer).text
             
             val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
@@ -36,16 +32,13 @@ class Jeniusplay : ExtractorApi() {
                     if (langMatch != null) {
                         val lang = getLanguage(langMatch.groupValues[1])
                         val subUrl = langMatch.groupValues[2]
-                        Log.d("adixtream", "Subtitle ketemu: $lang -> $subUrl")
                         subtitleCallback.invoke(SubtitleFile(lang, subUrl))
                     }
                 }
             }
 
-            // 3. Tembak API Asli Jeniusplay 
+            // 3. Tembak API Jeniusplay
             val apiUrl = "$mainUrl/player/index.php?data=$hash&do=getVideo"
-            Log.d("adixtream", "Menembak API: $apiUrl")
-            
             val apiResponse = app.post(
                 url = apiUrl,
                 data = mapOf("hash" to hash, "r" to (referer ?: mainUrl)),
@@ -54,33 +47,29 @@ class Jeniusplay : ExtractorApi() {
             ).parsedSafe<ResponseSource>()
 
             val rawVideoSource = apiResponse?.videoSource
-            Log.d("adixtream", "Respons API Jeniusplay: $rawVideoSource")
 
             if (!rawVideoSource.isNullOrEmpty()) {
-                // 4. BONGKAR PENYAMARAN: Ubah .woff atau .txt menjadi .m3u8
+                // Bongkar penyamaran .woff/.txt ke .m3u8
                 val m3u8Url = rawVideoSource.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
-                Log.d("adixtream", "Link M3U8 Final: $m3u8Url")
 
                 // Ekstraktor Utama
                 generateM3u8(name, m3u8Url, mainUrl).forEach(callback)
                 
-                // Ekstraktor Cadangan (Direct Player)
-                // PENGGUNAAN API BARU: newExtractorLink
+                // Ekstraktor Cadangan menggunakan newExtractorLink yang benar (Sesuai Source 78)
                 callback.invoke(
                     newExtractorLink(
                         source = name,
                         name = "$name (Direct)",
                         url = m3u8Url,
-                        referer = referer ?: mainUrl,
-                        quality = Qualities.Unknown.value,
-                        isM3u8 = true
-                    )
+                        type = ExtractorLinkType.M3U8 // Sesuai Source 67
+                    ) {
+                        // Parameter tambahan diatur di sini (Blok Initializer)
+                        this.quality = Qualities.Unknown.value // Sesuai Source 126
+                        this.referer = referer ?: mainUrl
+                    }
                 )
-            } else {
-                Log.e("adixtream", "Gagal! API Jeniusplay tidak memberikan link video.")
             }
         } catch (e: Exception) {
-            Log.e("adixtream", "Error di Extractor Jeniusplay: ${e.message}")
             e.printStackTrace()
         }
     }
