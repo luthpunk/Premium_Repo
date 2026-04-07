@@ -1,5 +1,6 @@
 package com.IdlixProvider
 
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.ExtractorApi
@@ -13,55 +14,75 @@ class Jeniusplay : ExtractorApi() {
     override val requiresReferer = true
 
     override suspend fun getUrl(
-        url: String, // Ini akan berisi https://jeniusplay.com/video/HASH
+        url: String,
         referer: String?,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        // 1. Ambil halaman HTML dari Iframe Jeniusplay
         val response = app.get(url, referer = referer)
         val document = response.document
         val htmlContent = response.text
 
-        // 2. Ambil Subtitle (Tipe baru: var playerjsSubtitle = "[Bahasa]https://...jpg";)
+        // 1. Ambil Subtitle (Trik [Bahasa]https://...jpg)
         val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
         subtitleRegex.find(htmlContent)?.groupValues?.get(1)?.let { subStr ->
-            // Formatnya bisa beberapa bahasa dipisah koma, contoh: "[Eng]http..,[Indo]http.."
             val tracks = subStr.split(",")
             for (track in tracks) {
-                // Regex untuk memisahkan nama bahasa di dalam [ ] dengan URL-nya
                 val langMatch = """\[(.*?)\](.*)""".toRegex().find(track)
                 if (langMatch != null) {
                     val lang = getLanguage(langMatch.groupValues[1])
                     val subUrl = langMatch.groupValues[2]
+                    Log.d("adixtream", "Subtitle ketemu: $lang -> $subUrl")
                     subtitleCallback.invoke(SubtitleFile(lang, subUrl))
                 }
             }
         }
 
-        // 3. Ambil Video (Membongkar skrip eval)
+        // 2. Ambil Video dengan REGEX SAPU JAGAT
         document.select("script").forEach { script ->
             val data = script.data()
             if (data.contains("eval(function(p,a,c,k,e,d)")) {
                 try {
-                    // Membongkar skrip yang di-obfuscate
+                    // Membongkar sandi packer
                     val unpacked = getAndUnpack(data)
                     
-                    // Mencari teks seperti file:"https://...txt" atau file:"https://...m3u8"
-                    val fileRegex = """["']?file["']?\s*:\s*["']([^"']+)["']""".toRegex()
-                    val match = fileRegex.find(unpacked)
+                    // SAPU JAGAT: Ambil SEMUA teks yang berbentuk URL https:// di dalam tanda kutip
+                    val urlRegex = """["'](https?://[^"']+)["']""".toRegex()
+                    val matches = urlRegex.findAll(unpacked)
                     
-                    if (match != null) {
+                    for (match in matches) {
                         val rawUrl = match.groupValues[1]
                         
-                        // Biasanya jeniusplay menyamarkan ekstensi m3u8 menjadi txt
-                        val m3u8Url = rawUrl.replace(".txt", ".m3u8")
+                        // FILTER: Buang URL gambar, subtitle, dan script player itu sendiri
+                        if (rawUrl.endsWith(".jpg", true) || 
+                            rawUrl.endsWith(".png", true) || 
+                            rawUrl.contains("jwplayer", true)) {
+                            continue
+                        }
                         
-                        // Generate link extractor
-                        generateM3u8(name, m3u8Url, mainUrl).forEach(callback)
+                        Log.d("adixtream", "JACKPOT! URL Video Potensial: $rawUrl")
+                        
+                        // Kembalikan ekstensi samaran .txt menjadi .m3u8
+                        val finalUrl = if (rawUrl.endsWith(".txt")) rawUrl.replace(".txt", ".m3u8") else rawUrl
+                        
+                        // Senjata 1: Biarkan Cloudstream yang mengekstrak resolusinya
+                        generateM3u8(name, finalUrl, mainUrl).forEach(callback)
+                        
+                        // Senjata 2 (Bypass): Jika generateM3u8 gagal karena ekstensi disamarkan jadi .woff
+                        // Kita paksa lempar URL mentahnya langsung ke ExoPlayer!
+                        callback.invoke(
+                            ExtractorLink(
+                                source = name,
+                                name = "$name (Direct Player)",
+                                url = finalUrl,
+                                referer = referer ?: mainUrl,
+                                quality = com.lagradost.cloudstream3.utils.Qualities.Unknown.value,
+                                isM3u8 = true // Paksa player menganggap ini adalah HLS/M3U8
+                            )
+                        )
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("adixtream", "Error Unpacking: ${e.message}")
                 }
             }
         }
