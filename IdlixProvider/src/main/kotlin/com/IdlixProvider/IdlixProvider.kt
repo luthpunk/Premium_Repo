@@ -137,6 +137,7 @@ class IdlixProvider : MainAPI() {
                         val epId = ep.id ?: ""
                         val still = ep.stillPath
                         val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                        
                         // KITA PACKING DATA UNTUK LOADLINKS: tipe|id|url
                         val loadData = "episode|$epId|$url"
                         
@@ -208,7 +209,11 @@ class IdlixProvider : MainAPI() {
             
             // 1. Ekstrak data yang di-packing dari fungsi load()
             val parts = data.split("|")
-            val contentType = parts.getOrNull(0) ?: "movie"
+            val rawContentType = parts.getOrNull(0) ?: "movie"
+            
+            // --- PERBAIKAN: Memotong URL jika tersisip secara otomatis dari Cloudstream ---
+            val contentType = rawContentType.substringAfterLast("/")
+            
             val contentId = parts.getOrNull(1) ?: data // Fallback jika data cuma UUID
             val refererUrl = parts.getOrNull(2) ?: "$mainUrl/"
             
