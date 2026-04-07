@@ -2,7 +2,6 @@ package com.IdlixProvider
 
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -20,28 +19,43 @@ class Jeniusplay : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        // Ambil halaman awal sekalian setting cookie
         val document = app.get(url, referer = referer).document
         val hash = url.split("/").last().substringAfter("data=")
 
-        val m3uLink = app.post(
+        // Minta link video dari server Jeniusplay
+        val response = app.post(
             url = "$mainUrl/player/index.php?data=$hash&do=getVideo",
-            data = mapOf("hash" to hash, "r" to "$referer"),
-            referer = referer,
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-        ).parsed<ResponseSource>().videoSource.replace(".txt",".m3u8")
+            data = mapOf("hash" to hash, "r" to (referer ?: "")), // Ini wajib URL iframe yang utuh
+            headers = mapOf(
+                "X-Requested-With" to "XMLHttpRequest",
+                "Origin" to mainUrl,
+                "Referer" to url // Jeniusplay maunya referer HTTP dari halamannya sendiri
+            )
+        ).parsedSafe<ResponseSource>()
 
-        generateM3u8(name, m3uLink, mainUrl).forEach(callback)
+        val videoSource = response?.videoSource
+        if (!videoSource.isNullOrEmpty()) {
+            // Jeniusplay mereturn .txt, kita ganti ke .m3u8 supaya bisa dibaca player
+            val m3uLink = videoSource.replace(".txt", ".m3u8")
+            generateM3u8(name, m3uLink, mainUrl).forEach(callback)
+        }
 
+        // Ekstrak Subtitle
         document.select("script").forEach { script ->
             if (script.data().contains("eval(function(p,a,c,k,e,d)")) {
-                val subData = getAndUnpack(script.data()).substringAfter("\"tracks\":[").substringBefore("],")
-                AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.map { subtitle ->
-                    subtitleCallback.invoke(
-                        newSubtitleFile(
-                            getLanguage(subtitle.label ?: ""),
-                            subtitle.file
+                try {
+                    val subData = getAndUnpack(script.data()).substringAfter("\"tracks\":[").substringBefore("],")
+                    AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.map { subtitle ->
+                        subtitleCallback.invoke(
+                            SubtitleFile(
+                                getLanguage(subtitle.label ?: ""),
+                                subtitle.file
+                            )
                         )
-                    )
+                    }
+                } catch (e: Exception) {
+                    // Abaikan kalau gagal ekstrak subtitle
                 }
             }
         }
