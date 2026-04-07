@@ -1,13 +1,11 @@
 package com.michat88
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.extractors.helper.AesHelper
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import java.net.URI
 
 class IdlixProvider : MainAPI() {
@@ -24,7 +22,6 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // Perbaikan URL Series Terbaru untuk berjaga-jaga
     override val mainPage = mainPageOf(
         "$mainUrl/api/movies?sort=createdAt&limit=36&page=" to "Movie Terbaru",
         "$mainUrl/api/series?sort=createdAt&limit=36&page=" to "Series Terbaru",
@@ -38,7 +35,7 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // FUNGSI BERANDA YANG SUDAH KEBAL ERROR (ANTI KOSONG)
+    // --- BERANDA: Menggunakan JsonNode agar kebal dari error ---
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -46,63 +43,56 @@ class IdlixProvider : MainAPI() {
         val url = request.data + page
         val responseText = app.get(url).text
         
-        // Sistem deteksi otomatis bentuk JSON
-        val items = try {
-            if (responseText.trim().startsWith("[")) {
-                AppUtils.parseJson<List<IdlixItem>>(responseText)
-            } else {
-                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
-                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
-            }
-        } catch (e: Exception) {
-            emptyList()
-        }
+        val jsonNode = AppUtils.mapper.readTree(responseText)
+        val dataArray = jsonNode.get("data") ?: jsonNode.get("results") ?: jsonNode.get("items") ?: jsonNode
         
-        val home = items.mapNotNull { item ->
-            val title = item.title ?: item.name ?: return@mapNotNull null
-            val slug = item.slug ?: return@mapNotNull null
-            val type = if (item.contentType?.contains("series") == true) TvType.TvSeries else TvType.Movie
+        if (dataArray == null || !dataArray.isArray) return newHomePageResponse(request.name, emptyList())
+
+        val home = arrayListOf<SearchResponse>()
+        for (item in dataArray) {
+            val title = item.get("title")?.asText() ?: item.get("name")?.asText() ?: continue
+            val slug = item.get("slug")?.asText() ?: continue
+            val contentType = item.get("contentType")?.asText() ?: ""
+            val type = if (contentType.contains("series")) TvType.TvSeries else TvType.Movie
+            
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
+            val posterPath = item.get("posterPath")?.asText()
+            val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" else "https://image.tmdb.org/t/p/w342$posterPath"
+            val quality = item.get("quality")?.asText() ?: ""
             
-            val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" else "https://image.tmdb.org/t/p/w342${item.posterPath}"
-            
-            newMovieSearchResponse(title, href, type) {
+            home.add(newMovieSearchResponse(title, href, type) {
                 this.posterUrl = posterUrl
-                this.quality = getQualityFromString(item.quality ?: "")
-            }
+                this.quality = getQualityFromString(quality)
+            })
         }
 
-        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
+        val hasNextPage = (jsonNode.get("pagination")?.get("page")?.asInt() ?: 1) < 
+                          (jsonNode.get("pagination")?.get("totalPages")?.asInt() ?: 1)
+                          
+        return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
 
-    // FUNGSI PENCARIAN YANG SUDAH KEBAL ERROR (ANTI KOSONG)
+    // --- PENCARIAN: Menggunakan JsonNode ---
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = java.net.URLEncoder.encode(query, "utf-8")
         val url = "$mainUrl/api/search?q=$encodedQuery&page=1&limit=36"
         
         val responseText = app.get(url).text
+        val jsonNode = AppUtils.mapper.readTree(responseText)
+        val dataArray = jsonNode.get("data") ?: jsonNode.get("results") ?: jsonNode.get("items") ?: jsonNode
         
-        // Sistem deteksi otomatis bentuk JSON
-        val items = try {
-            if (responseText.trim().startsWith("[")) {
-                AppUtils.parseJson<List<IdlixItem>>(responseText)
-            } else {
-                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
-                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
-            }
-        } catch (e: Exception) {
-            emptyList()
-        }
+        if (dataArray == null || !dataArray.isArray) return emptyList()
 
         val searchResults = arrayListOf<SearchResponse>()
-        for (item in items) {
-            val title = item.title ?: item.name ?: continue
-            val slug = item.slug ?: continue
-            val contentType = item.contentType ?: ""
+        for (item in dataArray) {
+            val title = item.get("title")?.asText() ?: item.get("name")?.asText() ?: continue
+            val slug = item.get("slug")?.asText() ?: continue
+            val contentType = item.get("contentType")?.asText() ?: ""
             val type = if (contentType.contains("series")) TvType.TvSeries else TvType.Movie
             
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
-            val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" else "https://image.tmdb.org/t/p/w342${item.posterPath}"
+            val posterPath = item.get("posterPath")?.asText()
+            val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" else "https://image.tmdb.org/t/p/w342$posterPath"
             
             searchResults.add(newMovieSearchResponse(title, href, type) {
                 this.posterUrl = posterUrl
@@ -112,63 +102,88 @@ class IdlixProvider : MainAPI() {
         return searchResults
     }
 
-    // FUNGSI DETAIL FILM (SUDAH SEMPURNA)
+    // --- DETAIL FILM: Menggunakan JsonNode ---
     override suspend fun load(url: String): LoadResponse {
         val isSeries = url.contains("/series/")
         val slug = url.split("/").last()
         
         val apiUrl = "$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug"
-        val response = app.get(apiUrl).parsedSafe<IdlixDetailResponse>() 
-            ?: throw ErrorLoadingException("Gagal mengambil data detail dari API")
+        val responseText = app.get(apiUrl).text
+        
+        val json = AppUtils.mapper.readTree(responseText)
             
-        val title = response.title ?: response.name ?: ""
-        val poster = response.posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
-        val background = response.backdropPath?.let { "https://image.tmdb.org/t/p/w1280$it" }
-        val plot = response.overview
-        val year = (response.releaseDate ?: response.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
+        val title = json.get("title")?.asText() ?: json.get("name")?.asText() ?: ""
         
-        val ratingStr = response.voteAverage?.toFloatOrNull()?.times(10)?.toInt()?.toString()
-        val trailer = response.trailerUrl
-        val tags = response.genres?.mapNotNull { it.name }
+        val posterPath = json.get("posterPath")?.asText()
+        val poster = if (posterPath.isNullOrEmpty() || posterPath == "null") "" else "https://image.tmdb.org/t/p/w500$posterPath"
         
-        val actors = response.cast?.mapNotNull {
-            val actorName = it.name ?: return@mapNotNull null
-            val profile = it.profilePath?.let { path -> "https://image.tmdb.org/t/p/w185$path" }
-            Actor(actorName, profile)
+        val backdropPath = json.get("backdropPath")?.asText()
+        val background = if (backdropPath.isNullOrEmpty() || backdropPath == "null") "" else "https://image.tmdb.org/t/p/w1280$backdropPath"
+        
+        val plot = json.get("overview")?.asText() ?: ""
+        
+        val dateStr = json.get("releaseDate")?.asText() ?: json.get("firstAirDate")?.asText() ?: ""
+        val year = dateStr.split("-").firstOrNull()?.toIntOrNull()
+        
+        val ratingStr = json.get("voteAverage")?.asText()?.toFloatOrNull()?.times(10)?.toInt()?.toString()
+        val trailer = json.get("trailerUrl")?.asText()
+        
+        val tags = arrayListOf<String>()
+        json.get("genres")?.forEach { genre ->
+            genre.get("name")?.asText()?.let { tags.add(it) }
+        }
+        
+        val actors = arrayListOf<Actor>()
+        json.get("cast")?.forEach { cast ->
+            val actorName = cast.get("name")?.asText() ?: return@forEach
+            val pPath = cast.get("profilePath")?.asText()
+            val profile = if (pPath.isNullOrEmpty() || pPath == "null") null else "https://image.tmdb.org/t/p/w185$pPath"
+            actors.add(Actor(actorName, profile))
         }
 
-        return if (isSeries) {
+        if (isSeries) {
             val episodes = arrayListOf<Episode>()
+            val firstSeasonId = json.get("firstSeason")?.get("id")?.asText()
             
-            response.seasons?.forEach { season ->
-                if (season.id == response.firstSeason?.id) {
-                    response.firstSeason?.episodes?.forEach { ep ->
-                        episodes.add(
-                            newEpisode(ep.id ?: "") {
-                                this.name = ep.name
-                                this.season = season.seasonNumber
-                                this.episode = ep.episodeNumber
-                                this.posterUrl = ep.stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
-                            }
-                        )
+            json.get("seasons")?.forEach { season ->
+                val seasonId = season.get("id")?.asText() ?: return@forEach
+                val seasonNumber = season.get("seasonNumber")?.asInt()
+                
+                if (seasonId == firstSeasonId) {
+                    json.get("firstSeason")?.get("episodes")?.forEach { ep ->
+                        val epId = ep.get("id")?.asText() ?: ""
+                        val still = ep.get("stillPath")?.asText()
+                        val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                        
+                        episodes.add(newEpisode(epId) {
+                            this.name = ep.get("name")?.asText()
+                            this.season = seasonNumber
+                            this.episode = ep.get("episodeNumber")?.asInt()
+                            this.posterUrl = epPoster
+                        })
                     }
                 } else {
-                    val seasonUrl = "$mainUrl/api/seasons/${season.id}"
-                    val seasonResponse = app.get(seasonUrl).parsedSafe<Season>()
-                    seasonResponse?.episodes?.forEach { ep ->
-                        episodes.add(
-                            newEpisode(ep.id ?: "") {
-                                this.name = ep.name
-                                this.season = season.seasonNumber
-                                this.episode = ep.episodeNumber
-                                this.posterUrl = ep.stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
-                            }
-                        )
-                    }
+                    val seasonUrl = "$mainUrl/api/seasons/$seasonId"
+                    try {
+                        val sRes = app.get(seasonUrl).text
+                        val sJson = AppUtils.mapper.readTree(sRes)
+                        sJson.get("episodes")?.forEach { ep ->
+                            val epId = ep.get("id")?.asText() ?: ""
+                            val still = ep.get("stillPath")?.asText()
+                            val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                            
+                            episodes.add(newEpisode(epId) {
+                                this.name = ep.get("name")?.asText()
+                                this.season = seasonNumber
+                                this.episode = ep.get("episodeNumber")?.asInt()
+                                this.posterUrl = epPoster
+                            })
+                        }
+                    } catch (e: Exception) {}
                 }
             }
             
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
                 this.year = year
@@ -179,7 +194,8 @@ class IdlixProvider : MainAPI() {
                 addTrailer(trailer)
             }
         } else {
-            newMovieLoadResponse(title, url, TvType.Movie, response.id ?: url) {
+            val movieId = json.get("id")?.asText() ?: url
+            return newMovieLoadResponse(title, url, TvType.Movie, movieId) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
                 this.year = year
@@ -192,14 +208,15 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // FUNGSI PEMUTAR VIDEO (SIAP KITA ROMBAK SETELAH INI)
+    // --- PEMUTAR VIDEO: Menggunakan JsonNode juga untuk keamanan ekstra ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Biarkan seperti ini dulu sampai kita dapat API videonya
+        // PERHATIAN: Kode video lama dipertahankan, kemungkinan gagal jalan 
+        // sampai kamu mengirimkan log cURL dari pemutar video web asli.
         val document = app.get(data).document
         val scriptRegex = """window\.idlixNonce=['"]([a-f0-9]+)['"].*?window\.idlixTime=(\d+).*?""".toRegex(RegexOption.DOT_MATCHES_ALL)
         val script = document.select("script:containsData(window.idlix)").toString()
@@ -210,23 +227,28 @@ class IdlixProvider : MainAPI() {
         document.select("ul#playeroptionsul > li").map {
             Triple(it.attr("data-post"), it.attr("data-nume"), it.attr("data-type"))
         }.amap { (id, nume, type) ->
-            val json = app.post(
+            val responseText = app.post(
                 url = "$directUrl/wp-admin/admin-ajax.php",
                 data = mapOf("action" to "doo_player_ajax", "post" to id, "nume" to nume, "type" to type, "_n" to idlixNonce, "_p" to id, "_t" to idlixTime),
                 referer = data,
                 headers = mapOf("Accept" to "*/*", "X-Requested-With" to "XMLHttpRequest")
-            ).parsedSafe<ResponseHash>() ?: return@amap
+            ).text
             
-            val metrix = AppUtils.parseJson<AesData>(json.embed_url).m
-            val password = createKey(json.key, metrix)
-            val decrypted = AesHelper.cryptoAESHandler(json.embed_url, password.toByteArray(), false)?.fixBloat() ?: return@amap
-            
-            Log.d("adixtream", decrypted.toJson())
-
-            when {
-                !decrypted.contains("youtube") -> loadExtractor(decrypted, directUrl, subtitleCallback, callback)
-                else -> return@amap
-            }
+            try {
+                val json = AppUtils.mapper.readTree(responseText)
+                val embedUrl = json.get("embed_url")?.asText() ?: return@amap
+                val key = json.get("key")?.asText() ?: return@amap
+                
+                val metrixJson = AppUtils.mapper.readTree(embedUrl)
+                val metrix = metrixJson.get("m")?.asText() ?: return@amap
+                
+                val password = createKey(key, metrix)
+                val decrypted = AesHelper.cryptoAESHandler(embedUrl, password.toByteArray(), false)?.fixBloat() ?: return@amap
+                
+                if (!decrypted.contains("youtube")) {
+                    loadExtractor(decrypted, directUrl, subtitleCallback, callback)
+                }
+            } catch (e: Exception) {}
         }
         return true
     }
@@ -250,87 +272,4 @@ class IdlixProvider : MainAPI() {
     private fun String.fixBloat(): String {
         return this.replace("\"", "").replace("\\", "")
     }
-
-    // --- KUMPULAN DATA KELAS API (DIUPDATE AGAR LEBIH KEBAL ERROR) ---
-    data class IdlixApiResponse(
-        @JsonProperty("data") val data: List<IdlixItem>? = null,
-        @JsonProperty("results") val results: List<IdlixItem>? = null,
-        @JsonProperty("items") val items: List<IdlixItem>? = null,
-        @JsonProperty("pagination") val pagination: Pagination? = null
-    )
-
-    data class Pagination(
-        @JsonProperty("page") val page: Int?,
-        @JsonProperty("totalPages") val totalPages: Int?
-    )
-
-    data class IdlixItem(
-        @JsonProperty("id") val id: String? = null,
-        @JsonProperty("title") val title: String? = null,
-        @JsonProperty("name") val name: String? = null,
-        @JsonProperty("slug") val slug: String? = null,
-        @JsonProperty("posterPath") val posterPath: String? = null,
-        @JsonProperty("contentType") val contentType: String? = null,
-        @JsonProperty("quality") val quality: String? = null,
-        @JsonProperty("voteAverage") val voteAverage: String? = null
-    )
-
-    data class IdlixDetailResponse(
-        @JsonProperty("id") val id: String? = null,
-        @JsonProperty("title") val title: String? = null,
-        @JsonProperty("name") val name: String? = null,
-        @JsonProperty("overview") val overview: String? = null,
-        @JsonProperty("posterPath") val posterPath: String? = null,
-        @JsonProperty("backdropPath") val backdropPath: String? = null,
-        @JsonProperty("voteAverage") val voteAverage: String? = null,
-        @JsonProperty("firstAirDate") val firstAirDate: String? = null,
-        @JsonProperty("releaseDate") val releaseDate: String? = null,
-        @JsonProperty("trailerUrl") val trailerUrl: String? = null,
-        @JsonProperty("genres") val genres: List<Genre>? = null,
-        @JsonProperty("cast") val cast: List<Cast>? = null,
-        @JsonProperty("seasons") val seasons: List<Season>? = null,
-        @JsonProperty("firstSeason") val firstSeason: Season? = null
-    )
-
-    data class Genre(@JsonProperty("name") val name: String? = null)
-    
-    data class Cast(
-        @JsonProperty("name") val name: String? = null, 
-        @JsonProperty("profilePath") val profilePath: String? = null
-    )
-    
-    data class Season(
-        @JsonProperty("id") val id: String? = null,
-        @JsonProperty("seasonNumber") val seasonNumber: Int? = null,
-        @JsonProperty("episodes") val episodes: List<EpisodeData>? = null
-    )
-    
-    data class EpisodeData(
-        @JsonProperty("id") val id: String? = null,
-        @JsonProperty("episodeNumber") val episodeNumber: Int? = null,
-        @JsonProperty("name") val name: String? = null,
-        @JsonProperty("stillPath") val stillPath: String? = null
-    )
-
-    // --- KUMPULAN DATA KELAS EXTRACTOR ---
-    data class ResponseSource(
-        @JsonProperty("hls") val hls: Boolean,
-        @JsonProperty("videoSource") val videoSource: String,
-        @JsonProperty("securedLink") val securedLink: String?,
-    )
-
-    data class Tracks(
-        @JsonProperty("kind") val kind: String?,
-        @JsonProperty("file") val file: String,
-        @JsonProperty("label") val label: String?,
-    )
-
-    data class ResponseHash(
-        @JsonProperty("embed_url") val embed_url: String,
-        @JsonProperty("key") val key: String,
-    )
-
-    data class AesData(
-        @JsonProperty("m") val m: String,
-    )
 }
