@@ -24,7 +24,6 @@ class IdlixProvider : MainAPI() {
         "$mainUrl/api/trending/top?contentType=series&limit=36&period=7d&page=" to "Trending Series"
     )
 
-    // --- BERANDA ---
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = request.data + page
         val responseText = app.get(url).text
@@ -50,7 +49,6 @@ class IdlixProvider : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
 
-    // --- PENCARIAN ---
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/api/search?q=${java.net.URLEncoder.encode(query, "utf-8")}&page=1&limit=36"
         val responseText = app.get(url).text
@@ -68,7 +66,6 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // --- DETAIL ---
     override suspend fun load(url: String): LoadResponse {
         val isSeries = url.contains("/series/")
         val slug = url.split("/").last()
@@ -84,7 +81,7 @@ class IdlixProvider : MainAPI() {
             response.seasons?.forEach { season ->
                 val sNum = season.seasonNumber
                 app.get("$mainUrl/api/seasons/${season.id}").parsedSafe<Season>()?.episodes?.forEach { ep ->
-                    // Simpan data ID dengan format "id|type" agar loadLinks tahu tipenya
+                    // KUNCI: Kita tandai ID dengan "|series"
                     episodes.add(newEpisode("${ep.id}|series") {
                         this.name = ep.name; this.season = sNum; this.episode = ep.episodeNumber
                         this.posterUrl = "https://image.tmdb.org/t/p/w500${ep.stillPath}"
@@ -95,14 +92,13 @@ class IdlixProvider : MainAPI() {
                 this.posterUrl = poster; this.plot = response.overview; addActors(actors); addTrailer(response.trailerUrl)
             }
         } else {
-            // Simpan data ID dengan format "id|movie"
+            // KUNCI: Kita tandai ID dengan "|movie"
             newMovieLoadResponse(title, url, TvType.Movie, "${response.id}|movie") {
                 this.posterUrl = poster; this.plot = response.overview; addActors(actors); addTrailer(response.trailerUrl)
             }
         }
     }
 
-    // --- LOAD LINKS (ANTI-GAGAL) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -114,11 +110,12 @@ class IdlixProvider : MainAPI() {
             val contentId = parts[0]
             val contentType = parts.getOrNull(1) ?: "movie"
 
-            // 1. Ambil Clearance
-            val clearanceToken = app.post("$mainUrl/api/adblock/clearance").parsedSafe<TokenResponse>()?.token 
-                                ?: app.post("$mainUrl/api/adblock/clearance").text.trim().replace("\"", "")
+            // 1. Ambil Clearance Tiket
+            val clearanceRes = app.post("$mainUrl/api/adblock/clearance").text
+            val clearanceToken = AppUtils.tryParseJson<TokenResponse>(clearanceRes)?.token 
+                                ?: clearanceRes.trim().replace("\"", "")
 
-            // 2. Minta Challenge
+            // 2. Minta Challenge & Signature dari Server
             val challengeRes = app.post(
                 url = "$mainUrl/api/watch/challenge",
                 data = mapOf("contentType" to contentType, "contentId" to contentId, "clearance" to clearanceToken),
@@ -127,9 +124,9 @@ class IdlixProvider : MainAPI() {
 
             val challenge = challengeRes.challenge ?: return false
             val signature = challengeRes.signature ?: ""
-            val diff = challengeRes.difficulty ?: 4
+            val diff = challengeRes.difficulty ?: 4 // Idlix sekarang pakai 4 nol
 
-            // 3. Mining Nonce (Sesuai Simulasi Termux)
+            // 3. Menambang Nonce (Sesuai Simulasi Termux)
             var nonce = 0
             val target = "0".repeat(diff)
             val md = MessageDigest.getInstance("SHA-256")
@@ -140,7 +137,7 @@ class IdlixProvider : MainAPI() {
                 nonce++
             }
 
-            // 4. Solve
+            // 4. Kirim Solusi untuk dapatkan embedUrl
             val solveRes = app.post(
                 url = "$mainUrl/api/watch/solve",
                 data = mapOf("challenge" to challenge, "signature" to signature, "nonce" to nonce.toString()),
@@ -150,7 +147,7 @@ class IdlixProvider : MainAPI() {
             val embedPath = solveRes?.embedUrl ?: solveRes?.url ?: return false
             val fullEmbedUrl = if (embedPath.startsWith("http")) embedPath else "$mainUrl$embedPath"
 
-            // 5. Ekstrak Jeniusplay
+            // 5. Buka Embed, ambil Jeniusplay, eksekusi Extractor
             val embedHtml = app.get(fullEmbedUrl, referer = "$mainUrl/").text
             val jeniusLink = """https://jeniusplay\.com/video/[a-zA-Z0-9]+""".toRegex().find(embedHtml)?.value
             
@@ -159,7 +156,7 @@ class IdlixProvider : MainAPI() {
                 return true
             }
         } catch (e: Exception) { 
-            Log.d("Idlix", "Error: ${e.message}") 
+            Log.d("Idlix", "Gagal load links: ${e.message}") 
         }
         return false
     }
