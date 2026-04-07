@@ -8,9 +8,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.extractors.helper.AesHelper
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import org.jsoup.nodes.Element
 import java.net.URI
-import java.net.URLDecoder
 
 class IdlixProvider : MainAPI() {
     override var mainUrl = "https://z1.idlixku.com"
@@ -67,103 +65,137 @@ class IdlixProvider : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
 
-    // FUNGSI PENCARIAN YANG SUDAH DIROMBAK MENGGUNAKAN API
+    // FUNGSI PENCARIAN YANG SUDAH DIROMBAK (ANTI-CRASH)
     override suspend fun search(query: String): List<SearchResponse> {
-        // Memanggil API search dengan limit yang diperbesar agar hasilnya banyak
-        val url = "$mainUrl/api/search?q=$query&page=1&limit=36"
-        val response = app.get(url).parsedSafe<IdlixApiResponse>()
+        val encodedQuery = java.net.URLEncoder.encode(query, "utf-8")
+        val url = "$mainUrl/api/search?q=$encodedQuery&page=1&limit=36"
         
-        return response?.data?.mapNotNull { item ->
-            val title = item.title ?: item.name ?: return@mapNotNull null
-            val slug = item.slug ?: return@mapNotNull null
+        val responseText = app.get(url).text
+        val jsonNode = AppUtils.mapper.readTree(responseText)
+        val arrayNode = jsonNode.get("data") ?: jsonNode.get("results") ?: jsonNode.get("items") ?: jsonNode
+        
+        if (arrayNode == null || !arrayNode.isArray) return emptyList()
+
+        val searchResults = arrayListOf<SearchResponse>()
+        for (item in arrayNode) {
+            val title = item.get("title")?.asText() ?: item.get("name")?.asText() ?: continue
+            val slug = item.get("slug")?.asText() ?: continue
+            val contentType = item.get("contentType")?.asText() ?: ""
+            val type = if (contentType.contains("series")) TvType.TvSeries else TvType.Movie
             
-            val type = if (item.contentType?.contains("series") == true) TvType.TvSeries else TvType.Movie
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
-            val posterUrl = item.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
+            val posterPath = item.get("posterPath")?.asText()
             
-            newMovieSearchResponse(title, href, type) {
-                this.posterUrl = posterUrl
+            val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") {
+                "" // Biarkan kosong jika tidak ada poster agar Coil tidak crash
+            } else {
+                "https://image.tmdb.org/t/p/w342$posterPath"
             }
-        } ?: emptyList()
+            
+            searchResults.add(newMovieSearchResponse(title, href, type) {
+                this.posterUrl = posterUrl
+            })
+        }
+        
+        return searchResults
     }
 
-    // Fungsi Load (Detail Film) - Masih menggunakan metode lama, nanti kita rombak jika error
+    // FUNGSI DETAIL FILM YANG SUDAH DIROMBAK (MEMBACA JSON)
     override suspend fun load(url: String): LoadResponse {
-        val request = app.get(url)
-        directUrl = getBaseUrl(request.url)
-        val document = request.document
+        val isSeries = url.contains("/series/")
+        val slug = url.split("/").last()
         
-        val title = document.selectFirst("div.data > h1")?.text()?.replace(Regex("\\(\\d{4}\\)"), "")?.trim().toString()
-        val poster = document.select("div.poster > img").attr("src")
+        // Memanggil API detail film/series
+        val apiUrl = "$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug"
+        val response = app.get(apiUrl).parsedSafe<IdlixDetailResponse>() 
+            ?: throw ErrorLoadingException("Gagal mengambil data detail dari API")
             
-        val tags = document.select("div.sgeneros > a").map { it.text() }
-        val year = Regex(",\\s?(\\d+)").find(document.select("span.date").text().trim())?.groupValues?.get(1)?.toIntOrNull()
+        val title = response.title ?: response.name ?: ""
+        val poster = response.posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+        val background = response.backdropPath?.let { "https://image.tmdb.org/t/p/w1280$it" }
+        val plot = response.overview
+        val year = (response.releaseDate ?: response.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
         
-        val tvType = if (document.select("ul#section > li:nth-child(1)").text().contains("Episodes")) TvType.TvSeries else TvType.Movie
+        // Konversi rating dari 8.10 menjadi 81
+        val rating = response.voteAverage?.toFloatOrNull()?.times(10)?.toInt()
+        val trailer = response.trailerUrl
+        val tags = response.genres?.mapNotNull { it.name }
         
-        val description = document.select("p:nth-child(3)").text().trim()
-        val trailer = document.selectFirst("div.embed iframe")?.attr("src")
-        val rating = document.selectFirst("span.dt_rating_vgs")?.text()
-        
-        val actors = document.select("div.persons > div[itemprop=actor]").map {
-            Actor(it.select("meta[itemprop=name]").attr("content"), it.select("img").attr("src"))
+        // Mengambil daftar aktor dengan link profil TMDB-nya
+        val actors = response.cast?.mapNotNull {
+            val actorName = it.name ?: return@mapNotNull null
+            val profile = it.profilePath?.let { path -> "https://image.tmdb.org/t/p/w185$path" }
+            Actor(actorName, profile)
         }
 
-        val recommendations = document.select("div.owl-item").map {
-            val recName = it.selectFirst("a")?.attr("href")?.removeSuffix("/")?.split("/")?.last() ?: ""
-            val recHref = it.selectFirst("a")?.attr("href") ?: ""
-            val recPosterUrl = it.selectFirst("img")?.attr("src").toString()
+        return if (isSeries) {
+            val episodes = arrayListOf<Episode>()
             
-            newTvSeriesSearchResponse(recName, recHref, TvType.TvSeries) {
-                this.posterUrl = recPosterUrl
-            }
-        }
-
-        return if (tvType == TvType.TvSeries) {
-            val episodes = document.select("ul.episodios > li").map {
-                val href = it.select("a").attr("href") ?: ""
-                val name = fixTitle(it.select("div.episodiotitle > a").text().trim())
-                val image = it.select("div.imagen > img").attr("src") ?: ""
-                val episode = it.select("div.numerando").text().replace(" ", "").split("-").last().toIntOrNull()
-                val season = it.select("div.numerando").text().replace(" ", "").split("-").first().toIntOrNull()
-                
-                newEpisode(href) {
-                    this.name = name
-                    this.season = season
-                    this.episode = episode
-                    this.posterUrl = image
+            // Loop untuk mengambil setiap season dan episodenya
+            response.seasons?.forEach { season ->
+                if (season.id == response.firstSeason?.id) {
+                    response.firstSeason?.episodes?.forEach { ep ->
+                        episodes.add(
+                            Episode(
+                                data = ep.id ?: "", // ID digunakan untuk pemutar video nanti
+                                name = ep.name,
+                                season = season.seasonNumber,
+                                episode = ep.episodeNumber,
+                                posterUrl = ep.stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+                            )
+                        )
+                    }
+                } else {
+                    // Ekstrak episode dari season lain jika ada
+                    val seasonUrl = "$mainUrl/api/seasons/${season.id}"
+                    val seasonResponse = app.get(seasonUrl).parsedSafe<Season>()
+                    seasonResponse?.episodes?.forEach { ep ->
+                        episodes.add(
+                            Episode(
+                                data = ep.id ?: "",
+                                name = ep.name,
+                                season = season.seasonNumber,
+                                episode = ep.episodeNumber,
+                                posterUrl = ep.stillPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+                            )
+                        )
+                    }
                 }
             }
+            
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
+                this.backgroundPosterUrl = background
                 this.year = year
-                this.plot = description
+                this.plot = plot
                 this.tags = tags
-                this.score = Score.from100(rating)
+                this.score = rating
                 addActors(actors)
-                this.recommendations = recommendations
                 addTrailer(trailer)
             }
         } else {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
+            newMovieLoadResponse(title, url, TvType.Movie, response.id ?: url) {
                 this.posterUrl = poster
+                this.backgroundPosterUrl = background
                 this.year = year
-                this.plot = description
+                this.plot = plot
                 this.tags = tags
-                this.score = Score.from100(rating)
+                this.score = rating
                 addActors(actors)
-                this.recommendations = recommendations
                 addTrailer(trailer)
             }
         }
     }
 
+    // FUNGSI PEMUTAR VIDEO (INI AKAN KITA UJI SELANJUTNYA)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Kode lama ini DIBIARKAN DULU SESUAI JANJI, tapi 100% ini bakal error
+        // karena Idlix sudah tidak pakai sistem wp-admin/admin-ajax.php lagi.
         val document = app.get(data).document
         val scriptRegex = """window\.idlixNonce=['"]([a-f0-9]+)['"].*?window\.idlixTime=(\d+).*?""".toRegex(RegexOption.DOT_MATCHES_ALL)
         val script = document.select("script:containsData(window.idlix)").toString()
@@ -215,7 +247,7 @@ class IdlixProvider : MainAPI() {
         return this.replace("\"", "").replace("\\", "")
     }
 
-    // --- KUMPULAN DATA KELAS API ---
+    // --- KUMPULAN DATA KELAS API (BARU) ---
     data class IdlixApiResponse(
         @JsonProperty("data") val data: List<IdlixItem>? = null,
         @JsonProperty("pagination") val pagination: Pagination? = null
@@ -237,7 +269,44 @@ class IdlixProvider : MainAPI() {
         @JsonProperty("voteAverage") val voteAverage: String? = null
     )
 
-    // --- KUMPULAN DATA KELAS EXTRACTOR ---
+    data class IdlixDetailResponse(
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("overview") val overview: String? = null,
+        @JsonProperty("posterPath") val posterPath: String? = null,
+        @JsonProperty("backdropPath") val backdropPath: String? = null,
+        @JsonProperty("voteAverage") val voteAverage: String? = null,
+        @JsonProperty("firstAirDate") val firstAirDate: String? = null,
+        @JsonProperty("releaseDate") val releaseDate: String? = null,
+        @JsonProperty("trailerUrl") val trailerUrl: String? = null,
+        @JsonProperty("genres") val genres: List<Genre>? = null,
+        @JsonProperty("cast") val cast: List<Cast>? = null,
+        @JsonProperty("seasons") val seasons: List<Season>? = null,
+        @JsonProperty("firstSeason") val firstSeason: Season? = null
+    )
+
+    data class Genre(@JsonProperty("name") val name: String? = null)
+    
+    data class Cast(
+        @JsonProperty("name") val name: String? = null, 
+        @JsonProperty("profilePath") val profilePath: String? = null
+    )
+    
+    data class Season(
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("seasonNumber") val seasonNumber: Int? = null,
+        @JsonProperty("episodes") val episodes: List<EpisodeData>? = null
+    )
+    
+    data class EpisodeData(
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("episodeNumber") val episodeNumber: Int? = null,
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("stillPath") val stillPath: String? = null
+    )
+
+    // --- KUMPULAN DATA KELAS EXTRACTOR (TETAP DIPERTAHANKAN) ---
     data class ResponseSource(
         @JsonProperty("hls") val hls: Boolean,
         @JsonProperty("videoSource") val videoSource: String,
