@@ -160,7 +160,7 @@ class IdlixProvider : MainAPI() {
             val episodes = arrayListOf<Episode>()
             val seasonNamesList = mutableListOf<SeasonData>()
             
-            // --- KEKUATAN TMDB (Untuk memunculkan semua tab season) ---
+            // --- KEKUATAN TMDB ---
             try {
                 val searchUrl = "$tmdbAPI/search/tv?api_key=$apiKey&query=${java.net.URLEncoder.encode(title, "utf-8")}&first_air_date_year=$year&language=id-ID"
                 val searchRes = app.get(searchUrl).parsedSafe<TmdbSearch>()
@@ -171,7 +171,7 @@ class IdlixProvider : MainAPI() {
                     
                     tvDetail?.seasons?.forEach { season ->
                         val sNum = season.season_number ?: return@forEach
-                        if (sNum == 0) return@forEach // Skip spesial
+                        if (sNum == 0) return@forEach 
                         
                         seasonNamesList.add(SeasonData(sNum, "Season $sNum"))
                         val seasonUrl = "$tmdbAPI/tv/$tmdbId/season/$sNum?api_key=$apiKey&language=id-ID"
@@ -181,16 +181,15 @@ class IdlixProvider : MainAPI() {
                             val eNum = eps.episode_number ?: return@forEach
                             val epPoster = eps.still_path?.let { "https://image.tmdb.org/t/p/w500$it" }
                             
-                            // TRIK JSON: Menggunakan LinkData agar tidak dirusak oleh fixUrl Cloudstream
                             val loadData = LinkData(
                                 type = "episode",
                                 slug = slug,
                                 season = sNum,
                                 episode = eNum,
                                 url = url
-                            ).toJson()
+                            )
                             
-                            episodes.add(newEpisode(loadData) {
+                            episodes.add(newEpisode(data = loadData) {
                                 this.name = eps.name
                                 this.season = sNum
                                 this.episode = eNum
@@ -227,9 +226,9 @@ class IdlixProvider : MainAPI() {
                             season = seasonNumber,
                             episode = ep.episodeNumber,
                             url = url
-                        ).toJson()
+                        )
                         
-                        episodes.add(newEpisode(loadData) {
+                        episodes.add(newEpisode(data = loadData) {
                             this.name = ep.name
                             this.season = seasonNumber
                             this.episode = ep.episodeNumber
@@ -257,9 +256,9 @@ class IdlixProvider : MainAPI() {
                 type = "movie",
                 id = movieId,
                 url = url
-            ).toJson()
+            )
             
-            newMovieLoadResponse(title, url, TvType.Movie, loadData) {
+            newMovieLoadResponse(title, url, TvType.Movie, data = loadData) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
                 this.year = year
