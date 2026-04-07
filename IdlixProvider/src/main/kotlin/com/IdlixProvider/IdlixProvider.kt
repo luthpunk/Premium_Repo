@@ -160,7 +160,7 @@ class IdlixProvider : MainAPI() {
             val episodes = arrayListOf<Episode>()
             val seasonNamesList = mutableListOf<SeasonData>()
             
-            // --- KEKUATAN TMDB ---
+            // --- KEKUATAN TMDB (Untuk memunculkan semua tab season) ---
             try {
                 val searchUrl = "$tmdbAPI/search/tv?api_key=$apiKey&query=${java.net.URLEncoder.encode(title, "utf-8")}&first_air_date_year=$year&language=id-ID"
                 val searchRes = app.get(searchUrl).parsedSafe<TmdbSearch>()
@@ -288,25 +288,30 @@ class IdlixProvider : MainAPI() {
             var contentId = linkData.id
             val refererUrl = linkData.url
             
-            // Jika ini Episode (TMDB) dan kita belum punya UUID-nya, kita Scrape HTML-nya!
+            // Jika ini Episode (TMDB) dan kita belum punya UUID-nya, kita Scrape HTML-nya (DIPERKUAT!)
             if (contentType == "episode" && contentId == null && linkData.slug != null) {
                 val epUrl = "$mainUrl/series/${linkData.slug}/season/${linkData.season}/episode/${linkData.episode}"
                 try {
                     val html = app.get(epUrl).text
                     
-                    // Mencari block JSON yang mengandung data episode saat ini
-                    val blockRegex = """\{[^{}]*"episodeNumber"\s*:\s*${linkData.episode}[^{}]*\}""".toRegex()
-                    val blockMatch = blockRegex.find(html)?.value
+                    // REGEX SUPER KUAT: Menggunakan (?s) agar bisa membaca melewati enter/baris baru
+                    // Dan menyapu area 300 karakter di sekitar nomor episode untuk mencari id (UUID)
+                    val regexes = listOf(
+                        """(?s)"id"\s*:\s*"([a-f0-9\-]{36})".{0,300}?"seasonNumber"\s*:\s*${linkData.season}.{0,300}?"episodeNumber"\s*:\s*${linkData.episode}\b""".toRegex(),
+                        """(?s)"seasonNumber"\s*:\s*${linkData.season}.{0,300}?"episodeNumber"\s*:\s*${linkData.episode}\b.{0,300}?"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex(),
+                        """(?s)"id"\s*:\s*"([a-f0-9\-]{36})".{0,300}?"episodeNumber"\s*:\s*${linkData.episode}\b""".toRegex(),
+                        """(?s)"episodeNumber"\s*:\s*${linkData.episode}\b.{0,300}?"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex()
+                    )
                     
-                    if (blockMatch != null) {
-                        contentId = """"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex().find(blockMatch)?.groupValues?.get(1)
+                    for (regex in regexes) {
+                        contentId = regex.find(html)?.groupValues?.get(1)
+                        if (contentId != null) break
                     }
                     
-                    // Fallback Regex jika block JSON gagal
+                    // Fallback Terakhir: Jika masih kosong, cari di object episode utama
                     if (contentId.isNullOrEmpty()) {
-                        val r1 = """"id"\s*:\s*"([a-f0-9\-]{36})"[^}]*?"episodeNumber"\s*:\s*${linkData.episode}\b""".toRegex()
-                        val r2 = """"episodeNumber"\s*:\s*${linkData.episode}\b[^}]*?"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex()
-                        contentId = r1.find(html)?.groupValues?.get(1) ?: r2.find(html)?.groupValues?.get(1)
+                        val fallbackRegex = """(?s)"episode"\s*:\s*\{[^{}]*?"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex()
+                        contentId = fallbackRegex.find(html)?.groupValues?.get(1)
                     }
                 } catch (e: Exception) {
                     Log.e("adixtream", "Gagal scrape UUID dari HTML: ${e.message}")
