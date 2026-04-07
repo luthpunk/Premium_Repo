@@ -248,7 +248,7 @@ class IdlixProvider : MainAPI() {
                 data = mapOf(
                     "challenge" to challengeText,
                     "signature" to signature,
-                    "nonce" to nonce.toString() // <--- FIX ERROR DI SINI BRO
+                    "nonce" to nonce.toString() 
                 )
             ).text
 
@@ -269,8 +269,8 @@ class IdlixProvider : MainAPI() {
                 
                 if (jeniusLink != null) {
                     Log.d("Idlix", "Link Jeniusplay ditemukan: $jeniusLink")
-                    // Serahkan tugas ekstrak .m3u8 ke file Jeniusplay Extractor milikmu
-                    loadExtractor(jeniusLink, "$mainUrl/", subtitleCallback, callback)
+                    // PERUBAHAN PENTING: Kita berikan fullIframeUrl sebagai referer ke Jeniusplay
+                    loadExtractor(jeniusLink, fullIframeUrl, subtitleCallback, callback)
                     return true
                 } else {
                     Log.d("Idlix", "Gagal menemukan link Jeniusplay di dalam Iframe")
