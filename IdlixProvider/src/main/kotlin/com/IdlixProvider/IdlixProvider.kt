@@ -1,4 +1,4 @@
-package com.michat88
+package com.michat88 // Catatan: Pastikan nama package ini sesuai dengan file milikmu sebelumnya ya!
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
@@ -10,6 +10,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
 import java.net.URI
+import java.net.URLDecoder
 
 class IdlixProvider : MainAPI() {
     override var mainUrl = "https://z1.idlixku.com"
@@ -25,7 +26,7 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // Menggunakan jalur API baru dari Idlix!
+    // Menggunakan jalur API baru dari Idlix
     override val mainPage = mainPageOf(
         "$mainUrl/api/movies?sort=createdAt&limit=36&page=" to "Movie Terbaru",
         "$mainUrl/api/series?sort=createdAt&limit=36&page=" to "Series Terbaru",
@@ -39,28 +40,21 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // FUNGSI BARU: Mengambil data langsung dari JSON API Idlix
+    // Mengambil data langsung dari JSON API Idlix
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Menyambungkan URL API dengan nomor halaman (1, 2, 3, dst)
         val url = request.data + page
-        
-        // Mem-parsing data JSON menjadi Object
         val response = app.get(url).parsedSafe<IdlixApiResponse>()
         
         val home = response?.data?.mapNotNull { item ->
             val title = item.title ?: item.name ?: return@mapNotNull null
             val slug = item.slug ?: return@mapNotNull null
-            
-            // Menentukan tipe konten
             val type = if (item.contentType?.contains("series") == true) TvType.TvSeries else TvType.Movie
-            
-            // Membentuk URL halaman detail
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
             
-            // Menyusun gambar dari TMDB langsung! (w342 adalah resolusi standar poster)
+            // Menyusun gambar dari TMDB langsung
             val posterUrl = item.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
             
             newMovieSearchResponse(title, href, type) {
@@ -69,18 +63,9 @@ class IdlixProvider : MainAPI() {
             }
         } ?: emptyList()
 
-        // Mengecek apakah masih ada halaman selanjutnya (untuk infinite scroll)
         val hasNextPage = (response?.pagination?.page ?: 1) < (response?.pagination?.totalPages ?: 1)
-        
         return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
-
-    // -----------------------------------------------------------
-    // CATATAN PENTING:
-    // Fungsi search() dan load() di bawah ini mungkin masih menggunakan 
-    // sistem lama (HTML Scraping). Jika pencarian atau halaman detail film 
-    // masih bermasalah, kita akan ganti juga ke versi API.
-    // -----------------------------------------------------------
 
     override suspend fun search(query: String): List<SearchResponse> {
         val req = app.get("$mainUrl/search/$query")
@@ -174,7 +159,6 @@ class IdlixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // ... Kode loadLinks (dekripsi AES) dibiarkan utuh
         val document = app.get(data).document
         val scriptRegex = """window\.idlixNonce=['"]([a-f0-9]+)['"].*?window\.idlixTime=(\d+).*?""".toRegex(RegexOption.DOT_MATCHES_ALL)
         val script = document.select("script:containsData(window.idlix)").toString()
@@ -226,7 +210,7 @@ class IdlixProvider : MainAPI() {
         return this.replace("\"", "").replace("\\", "")
     }
 
-    // --- DATA KELAS BARU UNTUK API ---
+    // --- KUMPULAN DATA KELAS API (BARU) ---
     data class IdlixApiResponse(
         @JsonProperty("data") val data: List<IdlixItem>? = null,
         @JsonProperty("pagination") val pagination: Pagination? = null
@@ -248,7 +232,19 @@ class IdlixProvider : MainAPI() {
         @JsonProperty("voteAverage") val voteAverage: String? = null
     )
 
-    // --- DATA KELAS LAMA ---
+    // --- KUMPULAN DATA KELAS EXTRACTOR (YANG TADI HILANG) ---
+    data class ResponseSource(
+        @JsonProperty("hls") val hls: Boolean,
+        @JsonProperty("videoSource") val videoSource: String,
+        @JsonProperty("securedLink") val securedLink: String?,
+    )
+
+    data class Tracks(
+        @JsonProperty("kind") val kind: String?,
+        @JsonProperty("file") val file: String,
+        @JsonProperty("label") val label: String?,
+    )
+
     data class ResponseHash(
         @JsonProperty("embed_url") val embed_url: String,
         @JsonProperty("key") val key: String,
