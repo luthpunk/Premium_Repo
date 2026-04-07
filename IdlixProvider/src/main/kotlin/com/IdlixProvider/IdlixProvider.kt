@@ -124,51 +124,92 @@ class IdlixProvider : MainAPI() {
             Actor(actorName, profile)
         }
 
+        // --- AMBIL REKOMENDASI (SARAN FILM/SERIES) ---
+        val recommendationsUrl = "$apiUrl/related"
+        val recommendationsList = try {
+            val recText = app.get(recommendationsUrl).text
+            val recItems = if (recText.trim().startsWith("[")) {
+                AppUtils.parseJson<List<IdlixItem>>(recText)
+            } else {
+                val parsed = AppUtils.parseJson<IdlixApiResponse>(recText)
+                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
+            }
+            
+            recItems.mapNotNull { item ->
+                val recTitle = item.title ?: item.name ?: return@mapNotNull null
+                val recSlug = item.slug ?: return@mapNotNull null
+                val recType = if (item.contentType?.contains("series", true) == true) TvType.TvSeries else TvType.Movie
+                val recHref = "$mainUrl/${if (recType == TvType.TvSeries) "series" else "movie"}/$recSlug"
+                val recPoster = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" 
+                                else "https://image.tmdb.org/t/p/w342${item.posterPath}"
+                
+                newMovieSearchResponse(recTitle, recHref, recType) {
+                    this.posterUrl = recPoster
+                }
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+
         return if (isSeries) {
             val episodes = arrayListOf<Episode>()
-            val firstSeasonId = response.firstSeason?.id
             
+            // --- PERBAIKAN: Loop semua season dengan lebih aman ---
             response.seasons?.forEach { season ->
-                val seasonId = season.id ?: return@forEach
                 val seasonNumber = season.seasonNumber
                 
-                if (seasonId == firstSeasonId) {
-                    response.firstSeason?.episodes?.forEach { ep ->
-                        val epId = ep.id ?: ""
-                        val still = ep.stillPath
-                        val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                        
-                        // KITA PACKING DATA UNTUK LOADLINKS: tipe|id|url
-                        val loadData = "episode|$epId|$url"
-                        
-                        episodes.add(newEpisode(loadData) {
-                            this.name = ep.name
-                            this.season = seasonNumber
-                            this.episode = ep.episodeNumber
-                            this.posterUrl = epPoster
-                        })
-                    }
-                } else {
-                    val seasonUrl = "$mainUrl/api/seasons/$seasonId"
+                // 1. Ambil episode langsung dari dalam data season (jika API sudah menyediakannya)
+                var epList = season.episodes
+                
+                // 2. Kalau kosong, cek apakah ini season pertama, biasanya nyangkut di object firstSeason
+                if (epList.isNullOrEmpty() && season.id != null && season.id == response.firstSeason?.id) {
+                    epList = response.firstSeason?.episodes
+                }
+
+                // 3. Kalau masih kosong dan ada ID, kita tembak API khusus season (Fallback)
+                if (epList.isNullOrEmpty() && season.id != null) {
+                    val seasonUrl = "$mainUrl/api/seasons/${season.id}"
                     try {
                         val seasonResponse = app.get(seasonUrl).parsedSafe<Season>()
-                        seasonResponse?.episodes?.forEach { ep ->
-                            val epId = ep.id ?: ""
-                            val still = ep.stillPath
-                            val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                            val loadData = "episode|$epId|$url"
-                            
-                            episodes.add(newEpisode(loadData) {
-                                this.name = ep.name
-                                this.season = seasonNumber
-                                this.episode = ep.episodeNumber
-                                this.posterUrl = epPoster
-                            })
-                        }
+                        epList = seasonResponse?.episodes
                     } catch (e: Exception) {}
+                }
+
+                // Masukkan daftar episode yang sudah didapat ke list utama Cloudstream
+                epList?.forEach { ep ->
+                    val epId = ep.id ?: return@forEach
+                    val still = ep.stillPath
+                    val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                    
+                    val loadData = "episode|$epId|$url"
+                    
+                    episodes.add(newEpisode(loadData) {
+                        this.name = ep.name
+                        this.season = seasonNumber
+                        this.episode = ep.episodeNumber
+                        this.posterUrl = epPoster
+                    })
                 }
             }
             
+            // --- Fallback Darurat: Kalau array seasons totally error, minimal season 1 masuk ---
+            if (episodes.isEmpty() && response.firstSeason != null) {
+                val seasonNumber = response.firstSeason.seasonNumber
+                response.firstSeason.episodes?.forEach { ep ->
+                    val epId = ep.id ?: return@forEach
+                    val still = ep.stillPath
+                    val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                    
+                    val loadData = "episode|$epId|$url"
+                    episodes.add(newEpisode(loadData) {
+                        this.name = ep.name
+                        this.season = seasonNumber
+                        this.episode = ep.episodeNumber
+                        this.posterUrl = epPoster
+                    })
+                }
+            }
+
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
@@ -176,6 +217,7 @@ class IdlixProvider : MainAPI() {
                 this.plot = plot
                 this.tags = tags
                 this.score = Score.from10(ratingStr)
+                this.recommendations = recommendationsList // <-- Menyisipkan rekomendasi
                 addActors(actors)
                 addTrailer(trailer)
             }
@@ -191,6 +233,7 @@ class IdlixProvider : MainAPI() {
                 this.plot = plot
                 this.tags = tags
                 this.score = Score.from10(ratingStr)
+                this.recommendations = recommendationsList // <-- Menyisipkan rekomendasi
                 addActors(actors)
                 addTrailer(trailer)
             }
@@ -211,7 +254,7 @@ class IdlixProvider : MainAPI() {
             val parts = data.split("|")
             val rawContentType = parts.getOrNull(0) ?: "movie"
             
-            // --- PERBAIKAN: Memotong URL jika tersisip secara otomatis dari Cloudstream ---
+            // Membersihkan URL jika Cloudstream otomatis menyisipkan mainUrl
             val contentType = rawContentType.substringAfterLast("/")
             
             val contentId = parts.getOrNull(1) ?: data // Fallback jika data cuma UUID
