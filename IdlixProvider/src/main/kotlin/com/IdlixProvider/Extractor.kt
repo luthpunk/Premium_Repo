@@ -18,38 +18,55 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            val hash = url.split("/").last().substringAfter("data=")
-            val response = app.get(url, referer = referer)
-            val htmlContent = response.text
-
-            // 1. Subtitle Filter
+            // --- PERBAIKAN: EKSTRAKSI HASH YANG LEBIH PINTAR ---
+            // Cari string panjang yang merupakan kombinasi huruf dan angka (hex/base64)
+            val hashRegex = """([a-zA-Z0-9]{30,})""".toRegex()
+            
+            // Coba ambil dari parameter data= dulu
+            var hash = url.substringAfter("data=", "").substringBefore("&")
+            
+            // Kalau kosong, cari pakai Regex di keseluruhan URL
+            if (hash.isBlank()) {
+                hash = hashRegex.find(url)?.groupValues?.get(1) ?: url.split("/").last()
+            }
+            
+            Log.d("adixtream", "Jeniusplay mengekstrak Hash: $hash")
+            
+            // 2. Ambil HTML mentah untuk Subtitle
+            val htmlContent = app.get(url, referer = referer).text
+            
             val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
             subtitleRegex.find(htmlContent)?.groupValues?.get(1)?.let { subStr ->
-                subStr.split(",").forEach { track ->
-                    """\[(.*?)\](.*)""".toRegex().find(track)?.let {
-                        val lang = if (it.groupValues[1].contains("indonesia", true) || it.groupValues[1].contains("bahasa", true)) "Indonesian" else it.groupValues[1]
-                        subtitleCallback.invoke(SubtitleFile(lang, it.groupValues[2]))
+                val tracks = subStr.split(",")
+                for (track in tracks) {
+                    val langMatch = """\[(.*?)\](.*)""".toRegex().find(track)
+                    if (langMatch != null) {
+                        val lang = getLanguage(langMatch.groupValues[1])
+                        val subUrl = langMatch.groupValues[2]
+                        subtitleCallback.invoke(SubtitleFile(lang, subUrl))
                     }
                 }
             }
 
-            // 2. API Request
-            val apiRes = app.post(
-                url = "$mainUrl/player/index.php?data=$hash&do=getVideo",
+            // 3. Tembak API Jeniusplay
+            val apiUrl = "$mainUrl/player/index.php?data=$hash&do=getVideo"
+            val apiResponse = app.post(
+                url = apiUrl,
                 data = mapOf("hash" to hash, "r" to (referer ?: mainUrl)),
                 referer = url,
                 headers = mapOf("X-Requested-With" to "XMLHttpRequest")
             ).parsedSafe<ResponseSource>()
 
-            val rawUrl = apiRes?.videoSource
-            if (!rawUrl.isNullOrEmpty()) {
-                // Bongkar .woff/.txt ke .m3u8
-                val m3u8Url = rawUrl.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
+            val rawVideoSource = apiResponse?.videoSource
+
+            if (!rawVideoSource.isNullOrEmpty()) {
+                // Bongkar penyamaran .woff/.txt ke .m3u8
+                val m3u8Url = rawVideoSource.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
 
                 // Ekstraktor Utama
                 generateM3u8(name, m3u8Url, mainUrl).forEach(callback)
                 
-                // Ekstraktor Cadangan - SESUAI EXTRACTORAPI.KT BARIS 78
+                // Ekstraktor Cadangan menggunakan newExtractorLink yang benar
                 callback.invoke(
                     newExtractorLink(
                         source = name,
@@ -57,14 +74,23 @@ class Jeniusplay : ExtractorApi() {
                         url = m3u8Url,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        // Parameter tambahan diatur di dalam initializer block
                         this.quality = Qualities.Unknown.value
                         this.referer = referer ?: mainUrl
                     }
                 )
+            } else {
+                Log.d("adixtream", "Jeniusplay gagal mendapat videoSource. Respons API: $apiResponse")
             }
         } catch (e: Exception) {
+            Log.e("adixtream", "Jeniusplay Error: ${e.message}")
             e.printStackTrace()
+        }
+    }
+
+    private fun getLanguage(str: String): String {
+        return when {
+            str.contains("indonesia", true) || str.contains("bahasa", true) -> "Indonesian"
+            else -> str
         }
     }
 }
