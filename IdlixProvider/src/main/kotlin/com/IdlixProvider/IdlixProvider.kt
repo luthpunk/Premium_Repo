@@ -155,7 +155,7 @@ class IdlixProvider : MainAPI() {
             val episodes = arrayListOf<Episode>()
             val seasonNamesList = mutableListOf<SeasonData>()
             
-            // --- MURNI IDLIX: EKSTRAK SEASON & EPISODE ---
+            // --- MURNI IDLIX DENGAN PARSER TEPAT ---
             if (!response.seasons.isNullOrEmpty()) {
                 response.seasons.forEach { season ->
                     val seasonNumber = season.seasonNumber ?: return@forEach
@@ -169,23 +169,27 @@ class IdlixProvider : MainAPI() {
                     }
                     
                     // Fallback 2: Tembak API Idlix untuk Season 2 dst.
-                    if (epList.isNullOrEmpty() && season.id != null) {
+                    if (epList.isNullOrEmpty()) {
                         try {
-                            val seasonUrl = "$mainUrl/api/seasons/${season.id}"
+                            // Tembak API dinamis (Format Baru sesuai Curl pengguna)
+                            val seasonUrl = "$mainUrl/api/series/$slug/season/$seasonNumber"
                             val seasonResText = app.get(seasonUrl).text
-                            val seasonData = AppUtils.tryParseJson<Season>(seasonResText)
-                            epList = seasonData?.episodes
+                            
+                            // Parse menggunakan Wrapper baru
+                            val seasonDataWrapper = AppUtils.tryParseJson<SeasonWrapper>(seasonResText)
+                            epList = seasonDataWrapper?.season?.episodes
                         } catch (e: Exception) {
                             Log.e("adixtream", "Gagal mengambil data season $seasonNumber: ${e.message}")
                         }
                     }
                     
                     epList?.forEach { ep ->
-                        val epId = ep.id ?: return@forEach // INI UUID ASLI MILIK IDLIX!
+                        val epId = ep.id ?: return@forEach 
                         val still = ep.stillPath
                         val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                        val epDesc = ep.overview
                         
-                        // Gunakan format string standar yang kebal dari fixUrl
+                        // Gunakan format string standar
                         val loadData = "episode|$epId|$url"
                         
                         episodes.add(newEpisode(loadData) {
@@ -193,16 +197,17 @@ class IdlixProvider : MainAPI() {
                             this.season = seasonNumber
                             this.episode = ep.episodeNumber
                             this.posterUrl = epPoster
+                            this.description = epDesc
                         })
                     }
                 }
             } else if (!response.episodes.isNullOrEmpty()) {
-                // Jika web tidak punya array seasons tapi langsung episodes
                 seasonNamesList.add(SeasonData(1, "Season 1"))
                 response.episodes.forEach { ep ->
                     val epId = ep.id ?: return@forEach
                     val still = ep.stillPath
                     val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                    val epDesc = ep.overview
                     
                     val loadData = "episode|$epId|$url"
                     episodes.add(newEpisode(loadData) {
@@ -210,6 +215,7 @@ class IdlixProvider : MainAPI() {
                         this.season = 1
                         this.episode = ep.episodeNumber
                         this.posterUrl = epPoster
+                        this.description = epDesc
                     })
                 }
             }
@@ -405,6 +411,11 @@ data class IdlixDetailResponse(
     @JsonProperty("episodes") val episodes: List<EpisodeData>? = null
 )
 
+// Menangkap struktur JSON {"season": {...}}
+data class SeasonWrapper(
+    @JsonProperty("season") val season: Season? = null
+)
+
 data class Genre(@JsonProperty("name") val name: String? = null)
 
 data class Cast(
@@ -422,6 +433,7 @@ data class EpisodeData(
     @JsonProperty("id") val id: String? = null,
     @JsonProperty("episodeNumber") val episodeNumber: Int? = null,
     @JsonProperty("name") val name: String? = null,
+    @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("stillPath") val stillPath: String? = null
 )
 
