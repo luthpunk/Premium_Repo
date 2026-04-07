@@ -211,7 +211,6 @@ class IdlixProvider : MainAPI() {
         val contentId = data 
         
         // Asumsi awal kita coba menggunakan tipe movie. 
-        // Jika API menolak, ini adalah tempat pertama yang bisa kita debug nanti.
         val contentType = "movie"
 
         try {
@@ -249,7 +248,7 @@ class IdlixProvider : MainAPI() {
                 data = mapOf(
                     "challenge" to challengeText,
                     "signature" to signature,
-                    "nonce" to nonce
+                    "nonce" to nonce.toString() // <--- FIX ERROR DI SINI BRO
                 )
             ).text
 
@@ -291,8 +290,7 @@ class IdlixProvider : MainAPI() {
     private fun solveChallenge(challenge: String): Pair<Int, String> {
         val md = MessageDigest.getInstance("SHA-256")
         
-        // Dari log yang kamu kirim, sepertinya mereka tidak meminta hash dengan pola khusus (misal awalan "0000").
-        // Jadi kita coba buat random angka nonce dan kita hash bersama challenge-nya.
+        // Kita coba buat random angka nonce dan kita hash bersama challenge-nya.
         val nonce = (100000..999999).random() 
         val input = "$challenge:$nonce" 
         val hashBytes = md.digest(input.toByteArray(Charsets.UTF_8))
