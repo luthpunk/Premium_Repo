@@ -1,4 +1,4 @@
-package com.michat88 // Catatan: Pastikan nama package ini sesuai dengan file milikmu sebelumnya ya!
+package com.michat88
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
@@ -40,7 +40,7 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // Mengambil data langsung dari JSON API Idlix
+    // Mengambil data beranda dari JSON API
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -67,22 +67,27 @@ class IdlixProvider : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
 
+    // FUNGSI PENCARIAN YANG SUDAH DIROMBAK MENGGUNAKAN API
     override suspend fun search(query: String): List<SearchResponse> {
-        val req = app.get("$mainUrl/search/$query")
-        mainUrl = getBaseUrl(req.url)
-        val document = req.document
+        // Memanggil API search dengan limit yang diperbesar agar hasilnya banyak
+        val url = "$mainUrl/api/search?q=$query&page=1&limit=36"
+        val response = app.get(url).parsedSafe<IdlixApiResponse>()
         
-        return document.select("div.result-item").map {
-            val title = it.selectFirst("div.title > a")?.text()?.replace(Regex("\\(\\d{4}\\)"), "")?.trim() ?: "Unknown"
-            val href = it.selectFirst("div.title > a")?.attr("href") ?: ""
-            val posterUrl = it.selectFirst("img")?.attr("src") ?: ""
+        return response?.data?.mapNotNull { item ->
+            val title = item.title ?: item.name ?: return@mapNotNull null
+            val slug = item.slug ?: return@mapNotNull null
             
-            newMovieSearchResponse(title, href, TvType.TvSeries) {
+            val type = if (item.contentType?.contains("series") == true) TvType.TvSeries else TvType.Movie
+            val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
+            val posterUrl = item.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
+            
+            newMovieSearchResponse(title, href, type) {
                 this.posterUrl = posterUrl
             }
-        }
+        } ?: emptyList()
     }
 
+    // Fungsi Load (Detail Film) - Masih menggunakan metode lama, nanti kita rombak jika error
     override suspend fun load(url: String): LoadResponse {
         val request = app.get(url)
         directUrl = getBaseUrl(request.url)
@@ -210,7 +215,7 @@ class IdlixProvider : MainAPI() {
         return this.replace("\"", "").replace("\\", "")
     }
 
-    // --- KUMPULAN DATA KELAS API (BARU) ---
+    // --- KUMPULAN DATA KELAS API ---
     data class IdlixApiResponse(
         @JsonProperty("data") val data: List<IdlixItem>? = null,
         @JsonProperty("pagination") val pagination: Pagination? = null
@@ -232,7 +237,7 @@ class IdlixProvider : MainAPI() {
         @JsonProperty("voteAverage") val voteAverage: String? = null
     )
 
-    // --- KUMPULAN DATA KELAS EXTRACTOR (YANG TADI HILANG) ---
+    // --- KUMPULAN DATA KELAS EXTRACTOR ---
     data class ResponseSource(
         @JsonProperty("hls") val hls: Boolean,
         @JsonProperty("videoSource") val videoSource: String,
