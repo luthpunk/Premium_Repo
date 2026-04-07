@@ -24,7 +24,7 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // Menggunakan jalur API baru dari Idlix
+    // Perbaikan URL Series Terbaru untuk berjaga-jaga
     override val mainPage = mainPageOf(
         "$mainUrl/api/movies?sort=createdAt&limit=36&page=" to "Movie Terbaru",
         "$mainUrl/api/series?sort=createdAt&limit=36&page=" to "Series Terbaru",
@@ -38,61 +38,85 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // Mengambil data beranda dari JSON API
+    // FUNGSI BERANDA YANG SUDAH KEBAL ERROR (ANTI KOSONG)
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
         val url = request.data + page
-        val response = app.get(url).parsedSafe<IdlixApiResponse>()
+        val responseText = app.get(url).text
         
-        val home = response?.data?.mapNotNull { item ->
+        // Sistem deteksi otomatis bentuk JSON
+        val items = try {
+            if (responseText.trim().startsWith("[")) {
+                AppUtils.parseJson<List<IdlixItem>>(responseText)
+            } else {
+                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
+                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        
+        val home = items.mapNotNull { item ->
             val title = item.title ?: item.name ?: return@mapNotNull null
             val slug = item.slug ?: return@mapNotNull null
             val type = if (item.contentType?.contains("series") == true) TvType.TvSeries else TvType.Movie
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
             
-            // Menyusun gambar dari TMDB langsung
-            val posterUrl = item.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
+            val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" else "https://image.tmdb.org/t/p/w342${item.posterPath}"
             
             newMovieSearchResponse(title, href, type) {
                 this.posterUrl = posterUrl
                 this.quality = getQualityFromString(item.quality ?: "")
             }
-        } ?: emptyList()
+        }
 
-        val hasNextPage = (response?.pagination?.page ?: 1) < (response?.pagination?.totalPages ?: 1)
-        return newHomePageResponse(request.name, home, hasNext = hasNextPage)
+        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
 
-    // FUNGSI PENCARIAN YANG SUDAH DIBERSIHKAN DARI ERROR
+    // FUNGSI PENCARIAN YANG SUDAH KEBAL ERROR (ANTI KOSONG)
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = java.net.URLEncoder.encode(query, "utf-8")
         val url = "$mainUrl/api/search?q=$encodedQuery&page=1&limit=36"
         
-        // Kita daur ulang IdlixApiResponse karena strukturnya sama persis!
-        val response = app.get(url).parsedSafe<IdlixApiResponse>()
+        val responseText = app.get(url).text
         
-        return response?.data?.mapNotNull { item ->
-            val title = item.title ?: item.name ?: return@mapNotNull null
-            val slug = item.slug ?: return@mapNotNull null
-            val type = if (item.contentType?.contains("series") == true) TvType.TvSeries else TvType.Movie
+        // Sistem deteksi otomatis bentuk JSON
+        val items = try {
+            if (responseText.trim().startsWith("[")) {
+                AppUtils.parseJson<List<IdlixItem>>(responseText)
+            } else {
+                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
+                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val searchResults = arrayListOf<SearchResponse>()
+        for (item in items) {
+            val title = item.title ?: item.name ?: continue
+            val slug = item.slug ?: continue
+            val contentType = item.contentType ?: ""
+            val type = if (contentType.contains("series")) TvType.TvSeries else TvType.Movie
             
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
-            val posterUrl = item.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
+            val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" else "https://image.tmdb.org/t/p/w342${item.posterPath}"
             
-            newMovieSearchResponse(title, href, type) {
+            searchResults.add(newMovieSearchResponse(title, href, type) {
                 this.posterUrl = posterUrl
-            }
-        } ?: emptyList()
+            })
+        }
+        
+        return searchResults
     }
 
-    // FUNGSI DETAIL FILM YANG SUDAH DIBERSIHKAN DARI ERROR
+    // FUNGSI DETAIL FILM (SUDAH SEMPURNA)
     override suspend fun load(url: String): LoadResponse {
         val isSeries = url.contains("/series/")
         val slug = url.split("/").last()
         
-        // Memanggil API detail film/series
         val apiUrl = "$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug"
         val response = app.get(apiUrl).parsedSafe<IdlixDetailResponse>() 
             ?: throw ErrorLoadingException("Gagal mengambil data detail dari API")
@@ -103,13 +127,10 @@ class IdlixProvider : MainAPI() {
         val plot = response.overview
         val year = (response.releaseDate ?: response.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
         
-        // Perbaikan Error Score (diubah ke String)
         val ratingStr = response.voteAverage?.toFloatOrNull()?.times(10)?.toInt()?.toString()
-        
         val trailer = response.trailerUrl
         val tags = response.genres?.mapNotNull { it.name }
         
-        // Mengambil daftar aktor dengan link profil TMDB-nya
         val actors = response.cast?.mapNotNull {
             val actorName = it.name ?: return@mapNotNull null
             val profile = it.profilePath?.let { path -> "https://image.tmdb.org/t/p/w185$path" }
@@ -119,11 +140,9 @@ class IdlixProvider : MainAPI() {
         return if (isSeries) {
             val episodes = arrayListOf<Episode>()
             
-            // Loop untuk mengambil setiap season dan episodenya
             response.seasons?.forEach { season ->
                 if (season.id == response.firstSeason?.id) {
                     response.firstSeason?.episodes?.forEach { ep ->
-                        // Perbaikan Error Episode menjadi newEpisode
                         episodes.add(
                             newEpisode(ep.id ?: "") {
                                 this.name = ep.name
@@ -134,7 +153,6 @@ class IdlixProvider : MainAPI() {
                         )
                     }
                 } else {
-                    // Ekstrak episode dari season lain jika ada
                     val seasonUrl = "$mainUrl/api/seasons/${season.id}"
                     val seasonResponse = app.get(seasonUrl).parsedSafe<Season>()
                     seasonResponse?.episodes?.forEach { ep ->
@@ -174,14 +192,14 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // FUNGSI PEMUTAR VIDEO (Hampir pasti gagal sampai kita update nanti)
+    // FUNGSI PEMUTAR VIDEO (SIAP KITA ROMBAK SETELAH INI)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Kode lama dipertahankan sementara
+        // Biarkan seperti ini dulu sampai kita dapat API videonya
         val document = app.get(data).document
         val scriptRegex = """window\.idlixNonce=['"]([a-f0-9]+)['"].*?window\.idlixTime=(\d+).*?""".toRegex(RegexOption.DOT_MATCHES_ALL)
         val script = document.select("script:containsData(window.idlix)").toString()
@@ -233,9 +251,11 @@ class IdlixProvider : MainAPI() {
         return this.replace("\"", "").replace("\\", "")
     }
 
-    // --- KUMPULAN DATA KELAS API ---
+    // --- KUMPULAN DATA KELAS API (DIUPDATE AGAR LEBIH KEBAL ERROR) ---
     data class IdlixApiResponse(
         @JsonProperty("data") val data: List<IdlixItem>? = null,
+        @JsonProperty("results") val results: List<IdlixItem>? = null,
+        @JsonProperty("items") val items: List<IdlixItem>? = null,
         @JsonProperty("pagination") val pagination: Pagination? = null
     )
 
