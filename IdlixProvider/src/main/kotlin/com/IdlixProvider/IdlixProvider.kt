@@ -155,68 +155,53 @@ class IdlixProvider : MainAPI() {
             val episodes = arrayListOf<Episode>()
             val seasonNamesList = mutableListOf<SeasonData>()
             
-            // --- MURNI IDLIX DENGAN PARSER TEPAT ---
-            if (!response.seasons.isNullOrEmpty()) {
-                response.seasons.forEach { season ->
-                    val seasonNumber = season.seasonNumber ?: return@forEach
-                    seasonNamesList.add(SeasonData(seasonNumber, "Season $seasonNumber"))
-                    
-                    var epList = season.episodes
-                    
-                    // Fallback 1: Jika episode kosong, ambil dari firstSeason
-                    if (epList.isNullOrEmpty() && season.id == response.firstSeason?.id) {
-                        epList = response.firstSeason?.episodes
+            // --- LOOP DINAMIS UNTUK MENGAMBIL SEMUA SEASON DARI IDLIX ---
+            var hasMoreSeasons = true
+            var sNum = 1
+            
+            while (hasMoreSeasons && sNum <= 30) {
+                var epList: List<EpisodeData>? = null
+                
+                // Untuk Season 1, cek dari response utama dulu agar hemat request
+                if (sNum == 1) {
+                    epList = response.firstSeason?.episodes ?: response.episodes
+                }
+                
+                // Jika list masih kosong (baik untuk season 1 maupun season 2 ke atas), tembak API Idlix
+                if (epList.isNullOrEmpty()) {
+                    val seasonUrl = "$mainUrl/api/series/$slug/season/$sNum"
+                    try {
+                        val seasonResText = app.get(seasonUrl).text
+                        val seasonDataWrapper = AppUtils.tryParseJson<SeasonWrapper>(seasonResText)
+                        epList = seasonDataWrapper?.season?.episodes
+                    } catch (e: Exception) {
+                        // Abaikan error (biasanya 404 jika season tidak ada)
                     }
-                    
-                    // Fallback 2: Tembak API Idlix untuk Season 2 dst.
-                    if (epList.isNullOrEmpty()) {
-                        try {
-                            // Tembak API dinamis (Format Baru sesuai Curl pengguna)
-                            val seasonUrl = "$mainUrl/api/series/$slug/season/$seasonNumber"
-                            val seasonResText = app.get(seasonUrl).text
-                            
-                            // Parse menggunakan Wrapper baru
-                            val seasonDataWrapper = AppUtils.tryParseJson<SeasonWrapper>(seasonResText)
-                            epList = seasonDataWrapper?.season?.episodes
-                        } catch (e: Exception) {
-                            Log.e("adixtream", "Gagal mengambil data season $seasonNumber: ${e.message}")
-                        }
-                    }
-                    
-                    epList?.forEach { ep ->
-                        val epId = ep.id ?: return@forEach 
+                }
+                
+                if (!epList.isNullOrEmpty()) {
+                    seasonNamesList.add(SeasonData(sNum, "Season $sNum"))
+                    epList.forEach { ep ->
+                        val epId = ep.id ?: return@forEach
                         val still = ep.stillPath
                         val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
                         val epDesc = ep.overview
                         
-                        // Gunakan format string standar
+                        // Gunakan format string standar yang kebal fixUrl dan menampung UUID aslinya
                         val loadData = "episode|$epId|$url"
                         
                         episodes.add(newEpisode(loadData) {
                             this.name = ep.name
-                            this.season = seasonNumber
+                            this.season = sNum
                             this.episode = ep.episodeNumber
                             this.posterUrl = epPoster
                             this.description = epDesc
                         })
                     }
-                }
-            } else if (!response.episodes.isNullOrEmpty()) {
-                seasonNamesList.add(SeasonData(1, "Season 1"))
-                response.episodes.forEach { ep ->
-                    val epId = ep.id ?: return@forEach
-                    val still = ep.stillPath
-                    val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                    val epDesc = ep.overview
-                    
-                    val loadData = "episode|$epId|$url"
-                    episodes.add(newEpisode(loadData) {
-                        this.name = ep.name
-                        this.season = 1
-                        this.episode = ep.episodeNumber
-                        this.posterUrl = epPoster
-                        this.description = epDesc
-                    })
+                    sNum++ // Lanjut cari season berikutnya
+                } else {
+                    // Jika kosong, berarti season sudah mentok/habis
+                    hasMoreSeasons = false
                 }
             }
 
@@ -228,7 +213,8 @@ class IdlixProvider : MainAPI() {
                 this.tags = tags
                 this.score = Score.from10(ratingStr)
                 this.recommendations = recommendationsList
-                addSeasonNames(seasonNamesList)
+                // Beritahu Cloudstream tentang semua Season yang ditemukan
+                addSeasonNames(seasonNamesList) 
                 addActors(actors)
                 addTrailer(trailer)
             }
@@ -411,7 +397,7 @@ data class IdlixDetailResponse(
     @JsonProperty("episodes") val episodes: List<EpisodeData>? = null
 )
 
-// Menangkap struktur JSON {"season": {...}}
+// Menangkap struktur JSON {"season": {...}} dari endpoint Season
 data class SeasonWrapper(
     @JsonProperty("season") val season: Season? = null
 )
