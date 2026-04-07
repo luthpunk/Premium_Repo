@@ -137,8 +137,8 @@ class IdlixProvider : MainAPI() {
                         val epId = ep.id ?: ""
                         val still = ep.stillPath
                         val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                        // KITA PACKING DATA UNTUK LOADLINKS: tipe|id|url
-                        val loadData = "episode|$epId|$url"
+                        // Packing Data: tipe|id|url_referer
+                        val loadData = "series|$epId|$url"
                         
                         episodes.add(newEpisode(loadData) {
                             this.name = ep.name
@@ -155,7 +155,7 @@ class IdlixProvider : MainAPI() {
                             val epId = ep.id ?: ""
                             val still = ep.stillPath
                             val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                            val loadData = "episode|$epId|$url"
+                            val loadData = "series|$epId|$url"
                             
                             episodes.add(newEpisode(loadData) {
                                 this.name = ep.name
@@ -179,8 +179,8 @@ class IdlixProvider : MainAPI() {
                 addTrailer(trailer)
             }
         } else {
-            val movieId = response.id ?: url
-            // KITA PACKING DATA UNTUK LOADLINKS: tipe|id|url
+            val movieId = response.id ?: ""
+            // Packing Data: tipe|id|url_referer
             val loadData = "movie|$movieId|$url"
             
             newMovieLoadResponse(title, url, TvType.Movie, loadData) {
@@ -206,28 +206,31 @@ class IdlixProvider : MainAPI() {
         try {
             Log.d("adixtream", "Mulai loadLinks dengan data: $data")
             
-            // 1. Ekstrak data yang di-packing dari fungsi load()
+            // 1. Ekstrak data dan bersihkan tipe (series/movie)
             val parts = data.split("|")
-            val contentType = parts.getOrNull(0) ?: "movie"
-            val contentId = parts.getOrNull(1) ?: data // Fallback jika data cuma UUID
+            val rawType = parts.getOrNull(0) ?: "movie"
+            
+            // Fix: Idlix API hanya menerima 'series' atau 'movie'. 
+            // Jika data mengandung 'episode' atau 'series', gunakan 'series'.
+            val contentType = if (rawType.contains("episode", true) || rawType.contains("series", true)) "series" else "movie"
+            
+            val contentId = parts.getOrNull(1) ?: data 
             val refererUrl = parts.getOrNull(2) ?: "$mainUrl/"
             
-            Log.d("adixtream", "Tipe: $contentType, ID: $contentId, Referer: $refererUrl")
+            Log.d("adixtream", "Tipe API: $contentType, ID: $contentId")
 
             // 2. Tahap 0: Meminta Clearance Token
             val clearanceText = app.post(
                 url = "$mainUrl/api/adblock/clearance",
-                headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
+                headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl)
             ).text.trim()
             
-            // Parsing pintar: Kadang respons API adalah string teks mentah, kadang JSON
             val tokenClear = if (clearanceText.startsWith("{")) {
                 AppUtils.parseJson<ClearanceResponse>(clearanceText).token
             } else {
                 clearanceText.replace("\"", "")
             }
             
-            Log.d("adixtream", "Clearance Token: $tokenClear")
             if (tokenClear.isNullOrEmpty()) return false
 
             // 3. Tahap 1: Meminta Challenge & Signature
@@ -238,21 +241,17 @@ class IdlixProvider : MainAPI() {
                     "contentId" to contentId,
                     "clearance" to tokenClear
                 ),
-                headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
+                headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl)
             ).parsedSafe<ChallengeResponse>()
 
             val challenge = challengeRes?.challenge ?: return false
             val signature = challengeRes.signature ?: return false
             val difficulty = challengeRes.difficulty ?: 3
-            
-            Log.d("adixtream", "Challenge: $challenge, Diff: $difficulty")
 
-            // 4. Tahap 2: Menambang Nonce (Sangat Cepat via Byte Level)
-            val nonce = mineNonce(challenge, difficulty)
-            Log.d("adixtream", "Nonce ketemu: $nonce")
-            if (nonce == null) return false
+            // 4. Tahap 2: Menambang Nonce
+            val nonce = mineNonce(challenge, difficulty) ?: return false
 
-            // 5. Tahap 3: Kirim Solusi (Solve)
+            // 5. Tahap 3: Kirim Solusi (Solve) untuk mendapatkan URL Embed
             val solveRes = app.post(
                 url = "$mainUrl/api/watch/solve",
                 json = mapOf(
@@ -260,45 +259,39 @@ class IdlixProvider : MainAPI() {
                     "signature" to signature,
                     "nonce" to nonce
                 ),
-                headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
+                headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl)
             ).parsedSafe<SolveResponse>()
 
             val embedPath = solveRes?.embedUrl ?: return false
             val fullEmbedUrl = if (embedPath.startsWith("/")) "$mainUrl$embedPath" else embedPath
-            Log.d("adixtream", "Eksekusi Embed URL: $fullEmbedUrl")
             
             // 6. Tahap 4: Eksekusi Embed URL untuk mendapatkan Iframe
             val embedHtml = app.get(fullEmbedUrl, headers = mapOf("Referer" to refererUrl)).document
-            
-            // Cari link di dalam tag iframe (Mengarah ke Jeniusplay)
             var iframeSrc = embedHtml.selectFirst("iframe")?.attr("src") 
             
             if (!iframeSrc.isNullOrEmpty()) {
                 if (iframeSrc.startsWith("//")) iframeSrc = "https:$iframeSrc"
                 Log.d("adixtream", "Melempar ke Extractor: $iframeSrc")
-                // Lempar link iframe ke Extractor
+                // Lempar link iframe ke Extractor (Jeniusplay)
                 loadExtractor(iframeSrc, refererUrl, subtitleCallback, callback)
             } else {
-                Log.d("adixtream", "Iframe tidak ditemukan. HTML: ${embedHtml.html()}")
+                Log.d("adixtream", "Iframe tidak ditemukan.")
             }
 
             return true
         } catch (e: Exception) {
             Log.e("adixtream", "Error di loadLinks: ${e.message}")
-            e.printStackTrace()
             return false
         }
     }
 
-    // --- FUNGSI BANTUAN MINING (SHA-256) SUPER CEPAT ---
+    // --- FUNGSI BANTUAN MINING (SHA-256) OPTIMAL ---
     private fun mineNonce(challenge: String, difficulty: Int): Int? {
         val md = MessageDigest.getInstance("SHA-256")
-        
         for (nonce in 0..2000000) {
             val text = challenge + nonce
             val bytes = md.digest(text.toByteArray())
             
-            // Cek byte secara langsung (jauh lebih ringan di memori daripada konversi string!)
             var isValid = true
             for (i in 0 until difficulty) {
                 val byteIndex = i / 2
@@ -308,7 +301,6 @@ class IdlixProvider : MainAPI() {
                 } else {
                     bytes[byteIndex].toInt() and 0x0F
                 }
-                
                 if (nibble != 0) {
                     isValid = false
                     break
@@ -385,15 +377,7 @@ data class EpisodeData(
 )
 
 data class ResponseSource(
-    @JsonProperty("hls") val hls: Boolean = false,
-    @JsonProperty("videoSource") val videoSource: String = "",
-    @JsonProperty("securedLink") val securedLink: String? = null
-)
-
-data class Tracks(
-    @JsonProperty("kind") val kind: String? = null,
-    @JsonProperty("file") val file: String = "",
-    @JsonProperty("label") val label: String? = null
+    @JsonProperty("videoSource") val videoSource: String? = null
 )
 
 data class ClearanceResponse(
