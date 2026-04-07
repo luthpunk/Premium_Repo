@@ -160,57 +160,7 @@ class IdlixProvider : MainAPI() {
             val episodes = arrayListOf<Episode>()
             val seasonNamesList = mutableListOf<SeasonData>()
             
-            // --- TAHAP 1: KUMPULKAN SEMUA DATA & UUID DARI IDLIX ---
-            data class IdlixEpMeta(val id: String, val name: String?, val poster: String?)
-            val idlixEpisodesMap = mutableMapOf<Pair<Int, Int>, IdlixEpMeta>() // Pair(Season, Episode) -> Meta
-
-            if (!response.seasons.isNullOrEmpty()) {
-                response.seasons.forEach { season ->
-                    val sNum = season.seasonNumber ?: return@forEach
-                    seasonNamesList.add(SeasonData(sNum, "Season $sNum"))
-                    
-                    var epList = season.episodes
-                    if (epList.isNullOrEmpty() && season.id == response.firstSeason?.id) {
-                        epList = response.firstSeason?.episodes
-                    }
-                    if (epList.isNullOrEmpty() && season.id != null) {
-                        val endpoints = listOf(
-                            "$mainUrl/api/seasons/${season.id}",
-                            "$mainUrl/api/series/$slug/seasons/$sNum",
-                            "$mainUrl/api/series/$slug/season/$sNum"
-                        )
-                        for (endpoint in endpoints) {
-                            try {
-                                val seasonRes = app.get(endpoint).parsedSafe<Season>()
-                                if (!seasonRes?.episodes.isNullOrEmpty()) {
-                                    epList = seasonRes?.episodes
-                                    break
-                                }
-                            } catch (e: Exception) {}
-                        }
-                    }
-                    
-                    epList?.forEach { ep ->
-                        val eNum = ep.episodeNumber ?: return@forEach
-                        val epId = ep.id ?: return@forEach
-                        val still = ep.stillPath
-                        val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                        idlixEpisodesMap[Pair(sNum, eNum)] = IdlixEpMeta(epId, ep.name, epPoster)
-                    }
-                }
-            } else if (!response.episodes.isNullOrEmpty()) {
-                seasonNamesList.add(SeasonData(1, "Season 1"))
-                response.episodes.forEach { ep ->
-                    val eNum = ep.episodeNumber ?: return@forEach
-                    val epId = ep.id ?: return@forEach
-                    val still = ep.stillPath
-                    val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                    idlixEpisodesMap[Pair(1, eNum)] = IdlixEpMeta(epId, ep.name, epPoster)
-                }
-            }
-
-            // --- TAHAP 2: AMBIL METADATA DARI TMDB UNTUK MEMPERCANTIK ---
-            val tmdbMetaMap = mutableMapOf<Pair<Int, Int>, TmdbEpisode>()
+            // --- KEKUATAN TMDB (Untuk memunculkan semua tab season) ---
             try {
                 val searchUrl = "$tmdbAPI/search/tv?api_key=$apiKey&query=${java.net.URLEncoder.encode(title, "utf-8")}&first_air_date_year=$year&language=id-ID"
                 val searchRes = app.get(searchUrl).parsedSafe<TmdbSearch>()
@@ -218,47 +168,75 @@ class IdlixProvider : MainAPI() {
                 
                 if (tmdbId != null) {
                     val tvDetail = app.get("$tmdbAPI/tv/$tmdbId?api_key=$apiKey&language=id-ID").parsedSafe<TmdbTvDetail>()
+                    
                     tvDetail?.seasons?.forEach { season ->
                         val sNum = season.season_number ?: return@forEach
-                        if (sNum == 0) return@forEach
+                        if (sNum == 0) return@forEach // Skip spesial
                         
-                        // Kalau di Idlix gak ada season ini, kita gak perlu minta ke TMDB
-                        if (idlixEpisodesMap.keys.none { it.first == sNum }) return@forEach
-                        
+                        seasonNamesList.add(SeasonData(sNum, "Season $sNum"))
                         val seasonUrl = "$tmdbAPI/tv/$tmdbId/season/$sNum?api_key=$apiKey&language=id-ID"
                         val seasonData = app.get(seasonUrl).parsedSafe<TmdbSeasonDetail>()
                         
                         seasonData?.episodes?.forEach { eps ->
                             val eNum = eps.episode_number ?: return@forEach
-                            tmdbMetaMap[Pair(sNum, eNum)] = eps
+                            val epPoster = eps.still_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+                            
+                            // TRIK JSON: Menggunakan LinkData agar tidak dirusak oleh fixUrl Cloudstream
+                            val loadData = LinkData(
+                                type = "episode",
+                                slug = slug,
+                                season = sNum,
+                                episode = eNum,
+                                url = url
+                            ).toJson()
+                            
+                            episodes.add(newEpisode(loadData) {
+                                this.name = eps.name
+                                this.season = sNum
+                                this.episode = eNum
+                                this.posterUrl = epPoster
+                                this.description = eps.overview
+                            })
                         }
                     }
                 }
             } catch (e: Exception) {
-                Log.e("adixtream", "Gagal load TMDB metadata: ${e.message}")
+                Log.e("adixtream", "Gagal fetch TMDB: ${e.message}")
             }
-
-            // --- TAHAP 3: GABUNGKAN DATA! ---
-            // Kita loop HANYA dari episode yang asli ada di Idlix supaya bisa diputar
-            idlixEpisodesMap.forEach { (key, idlixMeta) ->
-                val sNum = key.first
-                val eNum = key.second
-                val tmdbMeta = tmdbMetaMap[key]
-                
-                val epId = idlixMeta.id
-                val loadData = "episode|$epId|$url" // Menggunakan UUID idlix asli
-                
-                val epName = tmdbMeta?.name ?: idlixMeta.name
-                val epPoster = tmdbMeta?.still_path?.let { "https://image.tmdb.org/t/p/w500$it" } ?: idlixMeta.poster
-                val epDesc = tmdbMeta?.overview
-                
-                episodes.add(newEpisode(loadData) {
-                    this.name = epName
-                    this.season = sNum
-                    this.episode = eNum
-                    this.posterUrl = epPoster
-                    this.description = epDesc
-                })
+            
+            // --- FALLBACK KE IDLIX API ---
+            if (episodes.isEmpty()) {
+                response.seasons?.forEach { season ->
+                    val seasonNumber = season.seasonNumber ?: return@forEach
+                    seasonNamesList.add(SeasonData(seasonNumber, "Season $seasonNumber"))
+                    
+                    var epList = season.episodes
+                    if (epList.isNullOrEmpty() && season.id == response.firstSeason?.id) {
+                        epList = response.firstSeason?.episodes
+                    }
+                    
+                    epList?.forEach { ep ->
+                        val epId = ep.id ?: return@forEach
+                        val still = ep.stillPath
+                        val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                        
+                        val loadData = LinkData(
+                            type = "episode",
+                            id = epId,
+                            slug = slug,
+                            season = seasonNumber,
+                            episode = ep.episodeNumber,
+                            url = url
+                        ).toJson()
+                        
+                        episodes.add(newEpisode(loadData) {
+                            this.name = ep.name
+                            this.season = seasonNumber
+                            this.episode = ep.episodeNumber
+                            this.posterUrl = epPoster
+                        })
+                    }
+                }
             }
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -275,7 +253,11 @@ class IdlixProvider : MainAPI() {
             }
         } else {
             val movieId = response.id ?: url
-            val loadData = "movie|$movieId|$url"
+            val loadData = LinkData(
+                type = "movie",
+                id = movieId,
+                url = url
+            ).toJson()
             
             newMovieLoadResponse(title, url, TvType.Movie, loadData) {
                 this.posterUrl = poster
@@ -301,15 +283,45 @@ class IdlixProvider : MainAPI() {
         try {
             Log.d("adixtream", "Mulai loadLinks dengan data: $data")
             
-            val parts = data.split("|")
-            val rawContentType = parts.getOrNull(0) ?: "movie"
-            val contentType = rawContentType.substringAfterLast("/")
+            // Unpack data JSON
+            val linkData = AppUtils.parseJson<LinkData>(data)
+            val contentType = linkData.type
+            var contentId = linkData.id
+            val refererUrl = linkData.url
             
-            val contentId = parts.getOrNull(1) ?: data 
-            val refererUrl = parts.getOrNull(2) ?: "$mainUrl/"
+            // Jika ini Episode (TMDB) dan kita belum punya UUID-nya, kita Scrape HTML-nya!
+            if (contentType == "episode" && contentId == null && linkData.slug != null) {
+                val epUrl = "$mainUrl/series/${linkData.slug}/season/${linkData.season}/episode/${linkData.episode}"
+                try {
+                    val html = app.get(epUrl).text
+                    
+                    // Mencari block JSON yang mengandung data episode saat ini
+                    val blockRegex = """\{[^{}]*"episodeNumber"\s*:\s*${linkData.episode}[^{}]*\}""".toRegex()
+                    val blockMatch = blockRegex.find(html)?.value
+                    
+                    if (blockMatch != null) {
+                        contentId = """"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex().find(blockMatch)?.groupValues?.get(1)
+                    }
+                    
+                    // Fallback Regex jika block JSON gagal
+                    if (contentId.isNullOrEmpty()) {
+                        val r1 = """"id"\s*:\s*"([a-f0-9\-]{36})"[^}]*?"episodeNumber"\s*:\s*${linkData.episode}\b""".toRegex()
+                        val r2 = """"episodeNumber"\s*:\s*${linkData.episode}\b[^}]*?"id"\s*:\s*"([a-f0-9\-]{36})"""".toRegex()
+                        contentId = r1.find(html)?.groupValues?.get(1) ?: r2.find(html)?.groupValues?.get(1)
+                    }
+                } catch (e: Exception) {
+                    Log.e("adixtream", "Gagal scrape UUID dari HTML: ${e.message}")
+                }
+            }
             
+            if (contentId.isNullOrEmpty()) {
+                Log.d("adixtream", "contentId tidak ditemukan!")
+                return false
+            }
+
             Log.d("adixtream", "Tipe: $contentType, ID: $contentId, Referer: $refererUrl")
 
+            // --- TAHAP BYPASS KEAMANAN ---
             val clearanceText = app.post(
                 url = "$mainUrl/api/adblock/clearance",
                 headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
@@ -409,6 +421,15 @@ class IdlixProvider : MainAPI() {
 // ============================================================================
 // DATA CLASSES 
 // ============================================================================
+
+data class LinkData(
+    @JsonProperty("type") val type: String,
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("slug") val slug: String? = null,
+    @JsonProperty("season") val season: Int? = null,
+    @JsonProperty("episode") val episode: Int? = null,
+    @JsonProperty("url") val url: String
+)
 
 data class IdlixApiResponse(
     @JsonProperty("data") val data: List<IdlixItem>? = null,
