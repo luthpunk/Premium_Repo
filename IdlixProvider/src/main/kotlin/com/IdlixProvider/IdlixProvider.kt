@@ -36,6 +36,7 @@ class IdlixProvider : MainAPI() {
         }
     }
 
+    // --- BERANDA ---
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -43,137 +44,130 @@ class IdlixProvider : MainAPI() {
         val url = request.data + page
         val responseText = app.get(url).text
         
-        val jsonNode = AppUtils.mapper.readTree(responseText)
-        val dataArray = jsonNode.get("data") ?: jsonNode.get("results") ?: jsonNode.get("items") ?: jsonNode
+        var hasNextPage = false
+        val items = try {
+            // Algoritma Pintar: Cek bentuk JSON yang dikirimkan oleh API
+            if (responseText.trim().startsWith("[")) {
+                AppUtils.parseJson<List<IdlixItem>>(responseText)
+            } else {
+                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
+                hasNextPage = (parsed.pagination?.page ?: 1) < (parsed.pagination?.totalPages ?: 1)
+                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
         
-        if (dataArray == null || !dataArray.isArray) return newHomePageResponse(request.name, emptyList())
-
-        val home = arrayListOf<SearchResponse>()
-        for (item in dataArray) {
-            val title = item.get("title")?.asText() ?: item.get("name")?.asText() ?: continue
-            val slug = item.get("slug")?.asText() ?: continue
-            val contentType = item.get("contentType")?.asText() ?: ""
-            val type = if (contentType.contains("series")) TvType.TvSeries else TvType.Movie
-            
+        val home = items.mapNotNull { item ->
+            val title = item.title ?: item.name ?: return@mapNotNull null
+            val slug = item.slug ?: return@mapNotNull null
+            val type = if (item.contentType?.contains("series", true) == true) TvType.TvSeries else TvType.Movie
             val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
-            val posterPath = item.get("posterPath")?.asText()
-            val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" else "https://image.tmdb.org/t/p/w342$posterPath"
-            val quality = item.get("quality")?.asText() ?: ""
             
-            home.add(newMovieSearchResponse(title, href, type) {
+            val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" 
+                            else "https://image.tmdb.org/t/p/w342${item.posterPath}"
+            
+            newMovieSearchResponse(title, href, type) {
                 this.posterUrl = posterUrl
-                this.quality = getQualityFromString(quality)
-            })
+                this.quality = getQualityFromString(item.quality ?: "")
+            }
         }
 
-        val hasNextPage = (jsonNode.get("pagination")?.get("page")?.asInt() ?: 1) < 
-                          (jsonNode.get("pagination")?.get("totalPages")?.asInt() ?: 1)
-                          
         return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
 
+    // --- PENCARIAN ---
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = java.net.URLEncoder.encode(query, "utf-8")
         val url = "$mainUrl/api/search?q=$encodedQuery&page=1&limit=36"
         
         val responseText = app.get(url).text
-        val jsonNode = AppUtils.mapper.readTree(responseText)
-        val dataArray = jsonNode.get("data") ?: jsonNode.get("results") ?: jsonNode.get("items") ?: jsonNode
-        
-        if (dataArray == null || !dataArray.isArray) return emptyList()
-
-        val searchResults = arrayListOf<SearchResponse>()
-        for (item in dataArray) {
-            val title = item.get("title")?.asText() ?: item.get("name")?.asText() ?: continue
-            val slug = item.get("slug")?.asText() ?: continue
-            val contentType = item.get("contentType")?.asText() ?: ""
-            val type = if (contentType.contains("series")) TvType.TvSeries else TvType.Movie
-            
-            val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
-            val posterPath = item.get("posterPath")?.asText()
-            val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" else "https://image.tmdb.org/t/p/w342$posterPath"
-            
-            searchResults.add(newMovieSearchResponse(title, href, type) {
-                this.posterUrl = posterUrl
-            })
+        val items = try {
+            if (responseText.trim().startsWith("[")) {
+                AppUtils.parseJson<List<IdlixItem>>(responseText)
+            } else {
+                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
+                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
+            }
+        } catch (e: Exception) {
+            emptyList()
         }
-        
-        return searchResults
+
+        return items.mapNotNull { item ->
+            val title = item.title ?: item.name ?: return@mapNotNull null
+            val slug = item.slug ?: return@mapNotNull null
+            val type = if (item.contentType?.contains("series", true) == true) TvType.TvSeries else TvType.Movie
+            val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
+            
+            val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" 
+                            else "https://image.tmdb.org/t/p/w342${item.posterPath}"
+            
+            newMovieSearchResponse(title, href, type) {
+                this.posterUrl = posterUrl
+            }
+        }
     }
 
+    // --- DETAIL FILM / SERIES ---
     override suspend fun load(url: String): LoadResponse {
         val isSeries = url.contains("/series/")
         val slug = url.split("/").last()
         
         val apiUrl = "$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug"
-        val responseText = app.get(apiUrl).text
-        
-        val json = AppUtils.mapper.readTree(responseText)
+        val response = app.get(apiUrl).parsedSafe<IdlixDetailResponse>() 
+            ?: throw ErrorLoadingException("Gagal mengambil data detail dari API")
             
-        val title = json.get("title")?.asText() ?: json.get("name")?.asText() ?: ""
+        val title = response.title ?: response.name ?: ""
+        val poster = if (response.posterPath.isNullOrEmpty() || response.posterPath == "null") "" else "https://image.tmdb.org/t/p/w500${response.posterPath}"
+        val background = if (response.backdropPath.isNullOrEmpty() || response.backdropPath == "null") "" else "https://image.tmdb.org/t/p/w1280${response.backdropPath}"
+        val plot = response.overview
+        val year = (response.releaseDate ?: response.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
         
-        val posterPath = json.get("posterPath")?.asText()
-        val poster = if (posterPath.isNullOrEmpty() || posterPath == "null") "" else "https://image.tmdb.org/t/p/w500$posterPath"
+        val ratingStr = response.voteAverage?.toFloatOrNull()?.times(10)?.toInt()?.toString()
+        val trailer = response.trailerUrl
+        val tags = response.genres?.mapNotNull { it.name }
         
-        val backdropPath = json.get("backdropPath")?.asText()
-        val background = if (backdropPath.isNullOrEmpty() || backdropPath == "null") "" else "https://image.tmdb.org/t/p/w1280$backdropPath"
-        
-        val plot = json.get("overview")?.asText() ?: ""
-        
-        val dateStr = json.get("releaseDate")?.asText() ?: json.get("firstAirDate")?.asText() ?: ""
-        val year = dateStr.split("-").firstOrNull()?.toIntOrNull()
-        
-        val ratingStr = json.get("voteAverage")?.asText()?.toFloatOrNull()?.times(10)?.toInt()?.toString()
-        val trailer = json.get("trailerUrl")?.asText()
-        
-        val tags = arrayListOf<String>()
-        json.get("genres")?.forEach { genre ->
-            genre.get("name")?.asText()?.let { tags.add(it) }
-        }
-        
-        val actors = arrayListOf<Actor>()
-        json.get("cast")?.forEach { cast ->
-            val actorName = cast.get("name")?.asText() ?: return@forEach
-            val pPath = cast.get("profilePath")?.asText()
+        val actors = response.cast?.mapNotNull {
+            val actorName = it.name ?: return@mapNotNull null
+            val pPath = it.profilePath
             val profile = if (pPath.isNullOrEmpty() || pPath == "null") null else "https://image.tmdb.org/t/p/w185$pPath"
-            actors.add(Actor(actorName, profile))
+            Actor(actorName, profile)
         }
 
-        if (isSeries) {
+        return if (isSeries) {
             val episodes = arrayListOf<Episode>()
-            val firstSeasonId = json.get("firstSeason")?.get("id")?.asText()
+            val firstSeasonId = response.firstSeason?.id
             
-            json.get("seasons")?.forEach { season ->
-                val seasonId = season.get("id")?.asText() ?: return@forEach
-                val seasonNumber = season.get("seasonNumber")?.asInt()
+            response.seasons?.forEach { season ->
+                val seasonId = season.id ?: return@forEach
+                val seasonNumber = season.seasonNumber
                 
                 if (seasonId == firstSeasonId) {
-                    json.get("firstSeason")?.get("episodes")?.forEach { ep ->
-                        val epId = ep.get("id")?.asText() ?: ""
-                        val still = ep.get("stillPath")?.asText()
+                    response.firstSeason?.episodes?.forEach { ep ->
+                        val epId = ep.id ?: ""
+                        val still = ep.stillPath
                         val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
                         
                         episodes.add(newEpisode(epId) {
-                            this.name = ep.get("name")?.asText()
+                            this.name = ep.name
                             this.season = seasonNumber
-                            this.episode = ep.get("episodeNumber")?.asInt()
+                            this.episode = ep.episodeNumber
                             this.posterUrl = epPoster
                         })
                     }
                 } else {
                     val seasonUrl = "$mainUrl/api/seasons/$seasonId"
                     try {
-                        val sRes = app.get(seasonUrl).text
-                        val sJson = AppUtils.mapper.readTree(sRes)
-                        sJson.get("episodes")?.forEach { ep ->
-                            val epId = ep.get("id")?.asText() ?: ""
-                            val still = ep.get("stillPath")?.asText()
+                        val seasonResponse = app.get(seasonUrl).parsedSafe<Season>()
+                        seasonResponse?.episodes?.forEach { ep ->
+                            val epId = ep.id ?: ""
+                            val still = ep.stillPath
                             val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
                             
                             episodes.add(newEpisode(epId) {
-                                this.name = ep.get("name")?.asText()
+                                this.name = ep.name
                                 this.season = seasonNumber
-                                this.episode = ep.get("episodeNumber")?.asInt()
+                                this.episode = ep.episodeNumber
                                 this.posterUrl = epPoster
                             })
                         }
@@ -181,25 +175,25 @@ class IdlixProvider : MainAPI() {
                 }
             }
             
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.score = Score.from100(ratingStr)
+                this.score = Score.from10(ratingStr)
                 addActors(actors)
                 addTrailer(trailer)
             }
         } else {
-            val movieId = json.get("id")?.asText() ?: url
-            return newMovieLoadResponse(title, url, TvType.Movie, movieId) {
+            val movieId = response.id ?: url
+            newMovieLoadResponse(title, url, TvType.Movie, movieId) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
                 this.year = year
                 this.plot = plot
                 this.tags = tags
-                this.score = Score.from100(ratingStr)
+                this.score = Score.from10(ratingStr)
                 addActors(actors)
                 addTrailer(trailer)
             }
@@ -232,17 +226,16 @@ class IdlixProvider : MainAPI() {
             ).text
             
             try {
-                val json = AppUtils.mapper.readTree(responseText)
-                val embedUrl = json.get("embed_url")?.asText() ?: return@amap
-                val key = json.get("key")?.asText() ?: return@amap
+                val json = AppUtils.parseJson<ResponseHash>(responseText)
+                val embedUrl = json.embed_url
+                val key = json.key
                 
-                val metrixJson = AppUtils.mapper.readTree(embedUrl)
-                val metrix = metrixJson.get("m")?.asText() ?: return@amap
+                val metrixJson = app.get(embedUrl).text
+                val metrix = AppUtils.parseJson<AesData>(metrixJson).m
                 
                 val password = createKey(key, metrix)
                 val decrypted = AesHelper.cryptoAESHandler(embedUrl, password.toByteArray(), false)?.fixBloat() ?: return@amap
                 
-                // ERROR .toJson() SUDAH DIHAPUS DI SINI!
                 Log.d("adixtream", decrypted)
 
                 when {
@@ -276,9 +269,70 @@ class IdlixProvider : MainAPI() {
 }
 
 // ============================================================================
-// DATA CLASSES TETAP DI LUAR AGAR BISA DIBACA OLEH EXTRACTOR.KT
+// DATA CLASSES DI LUAR CLASS UTAMA (INI KUNCI AGAR TIDAK ERROR)
 // ============================================================================
 
+data class IdlixApiResponse(
+    @JsonProperty("data") val data: List<IdlixItem>? = null,
+    @JsonProperty("results") val results: List<IdlixItem>? = null,
+    @JsonProperty("items") val items: List<IdlixItem>? = null,
+    @JsonProperty("pagination") val pagination: Pagination? = null
+)
+
+data class Pagination(
+    @JsonProperty("page") val page: Int? = null,
+    @JsonProperty("totalPages") val totalPages: Int? = null
+)
+
+data class IdlixItem(
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("slug") val slug: String? = null,
+    @JsonProperty("posterPath") val posterPath: String? = null,
+    @JsonProperty("contentType") val contentType: String? = null,
+    @JsonProperty("quality") val quality: String? = null,
+    @JsonProperty("voteAverage") val voteAverage: String? = null
+)
+
+data class IdlixDetailResponse(
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("overview") val overview: String? = null,
+    @JsonProperty("posterPath") val posterPath: String? = null,
+    @JsonProperty("backdropPath") val backdropPath: String? = null,
+    @JsonProperty("voteAverage") val voteAverage: String? = null,
+    @JsonProperty("firstAirDate") val firstAirDate: String? = null,
+    @JsonProperty("releaseDate") val releaseDate: String? = null,
+    @JsonProperty("trailerUrl") val trailerUrl: String? = null,
+    @JsonProperty("genres") val genres: List<Genre>? = null,
+    @JsonProperty("cast") val cast: List<Cast>? = null,
+    @JsonProperty("seasons") val seasons: List<Season>? = null,
+    @JsonProperty("firstSeason") val firstSeason: Season? = null
+)
+
+data class Genre(@JsonProperty("name") val name: String? = null)
+
+data class Cast(
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("profilePath") val profilePath: String? = null
+)
+
+data class Season(
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("seasonNumber") val seasonNumber: Int? = null,
+    @JsonProperty("episodes") val episodes: List<EpisodeData>? = null
+)
+
+data class EpisodeData(
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("episodeNumber") val episodeNumber: Int? = null,
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("stillPath") val stillPath: String? = null
+)
+
+// Data Kelas yang diwajibkan oleh Extractor.kt
 data class ResponseSource(
     @JsonProperty("hls") val hls: Boolean = false,
     @JsonProperty("videoSource") val videoSource: String = "",
