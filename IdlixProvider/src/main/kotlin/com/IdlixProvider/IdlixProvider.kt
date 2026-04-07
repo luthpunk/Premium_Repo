@@ -27,18 +27,12 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // Daftar menu/kategori yang akan ditampilkan di halaman beranda aplikasi
+    // Daftar menu/kategori yang sudah disesuaikan dengan routing website baru
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Featured",
-        "$mainUrl/trending/page/?get=movies" to "Trending Movies",
-        "$mainUrl/trending/page/?get=tv" to "Trending TV Series",
-        "$mainUrl/movie/page/" to "Movie Terbaru",
-        "$mainUrl/tvseries/page/" to "TV Series Terbaru",
-        "$mainUrl/network/amazon/page/" to "Amazon Prime",
-        "$mainUrl/network/apple-tv/page/" to "Apple TV+ Series",
-        "$mainUrl/network/disney/page/" to "Disney+ Series",
-        "$mainUrl/network/HBO/page/" to "HBO Series",
-        "$mainUrl/network/netflix/page/" to "Netflix Series",
+        "$mainUrl/movie/page/" to "Movie",
+        "$mainUrl/series/page/" to "Series",
+        "$mainUrl/genre/horror/page/" to "Horror",
+        "$mainUrl/genre/adventure/page/" to "Adventure"
     )
 
     // Fungsi utilitas untuk mengambil alamat dasar (base URL)
@@ -48,7 +42,7 @@ class IdlixProvider : MainAPI() {
         }
     }
 
-    // FUNGSI BARU: Pengekstrak Poster Cerdas (Bypass Next.js Image & Lazy Loading)
+    // FUNGSI BARU: Pengekstrak Poster Cerdas (Bypass Next.js Image, Lazy Loading, & TMDB)
     private fun Element?.getPosterUrl(): String {
         if (this == null) return ""
         
