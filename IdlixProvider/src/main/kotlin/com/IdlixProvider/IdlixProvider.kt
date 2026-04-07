@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
+import java.net.URI
 import java.security.MessageDigest
 
 class IdlixProvider : MainAPI() {
@@ -15,7 +16,10 @@ class IdlixProvider : MainAPI() {
     override var lang = "id"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
-        TvType.Movie, TvType.TvSeries, TvType.Anime, TvType.AsianDrama
+        TvType.Movie,
+        TvType.TvSeries,
+        TvType.Anime,
+        TvType.AsianDrama
     )
 
     override val mainPage = mainPageOf(
@@ -24,9 +28,14 @@ class IdlixProvider : MainAPI() {
         "$mainUrl/api/trending/top?contentType=series&limit=36&period=7d&page=" to "Trending Series"
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    // --- BERANDA ---
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
         val url = request.data + page
         val responseText = app.get(url).text
+        
         var hasNextPage = false
         val items = try {
             if (responseText.trim().startsWith("[")) {
@@ -36,69 +45,153 @@ class IdlixProvider : MainAPI() {
                 hasNextPage = (parsed.pagination?.page ?: 1) < (parsed.pagination?.totalPages ?: 1)
                 parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
             }
-        } catch (e: Exception) { emptyList() }
+        } catch (e: Exception) {
+            emptyList()
+        }
         
         val home = items.mapNotNull { item ->
             val title = item.title ?: item.name ?: return@mapNotNull null
+            val slug = item.slug ?: return@mapNotNull null
             val type = if (item.contentType?.contains("series", true) == true) TvType.TvSeries else TvType.Movie
-            newMovieSearchResponse(title, "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/${item.slug}", type) {
-                this.posterUrl = if (item.posterPath.isNullOrEmpty()) "" else "https://image.tmdb.org/t/p/w342${item.posterPath}"
+            val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
+            
+            val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" 
+                            else "https://image.tmdb.org/t/p/w342${item.posterPath}"
+            
+            newMovieSearchResponse(title, href, type) {
+                this.posterUrl = posterUrl
                 this.quality = getQualityFromString(item.quality ?: "")
             }
         }
+
         return newHomePageResponse(request.name, home, hasNext = hasNextPage)
     }
 
+    // --- PENCARIAN ---
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/api/search?q=${java.net.URLEncoder.encode(query, "utf-8")}&page=1&limit=36"
+        val encodedQuery = java.net.URLEncoder.encode(query, "utf-8")
+        val url = "$mainUrl/api/search?q=$encodedQuery&page=1&limit=36"
+        
         val responseText = app.get(url).text
         val items = try {
-            if (responseText.trim().startsWith("[")) AppUtils.parseJson<List<IdlixItem>>(responseText)
-            else AppUtils.parseJson<IdlixApiResponse>(responseText).let { it.data ?: it.results ?: it.items ?: emptyList() }
-        } catch (e: Exception) { emptyList() }
+            if (responseText.trim().startsWith("[")) {
+                AppUtils.parseJson<List<IdlixItem>>(responseText)
+            } else {
+                val parsed = AppUtils.parseJson<IdlixApiResponse>(responseText)
+                parsed.data ?: parsed.results ?: parsed.items ?: emptyList()
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
 
         return items.mapNotNull { item ->
             val title = item.title ?: item.name ?: return@mapNotNull null
+            val slug = item.slug ?: return@mapNotNull null
             val type = if (item.contentType?.contains("series", true) == true) TvType.TvSeries else TvType.Movie
-            newMovieSearchResponse(title, "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/${item.slug}", type) {
-                this.posterUrl = if (item.posterPath.isNullOrEmpty()) "" else "https://image.tmdb.org/t/p/w342${item.posterPath}"
+            val href = "$mainUrl/${if (type == TvType.TvSeries) "series" else "movie"}/$slug"
+            
+            val posterUrl = if (item.posterPath.isNullOrEmpty() || item.posterPath == "null") "" 
+                            else "https://image.tmdb.org/t/p/w342${item.posterPath}"
+            
+            newMovieSearchResponse(title, href, type) {
+                this.posterUrl = posterUrl
             }
         }
     }
 
+    // --- DETAIL FILM / SERIES ---
     override suspend fun load(url: String): LoadResponse {
         val isSeries = url.contains("/series/")
         val slug = url.split("/").last()
-        val response = app.get("$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug").parsedSafe<IdlixDetailResponse>() 
-            ?: throw ErrorLoadingException("Gagal load API Detail")
+        
+        val apiUrl = "$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug"
+        val response = app.get(apiUrl).parsedSafe<IdlixDetailResponse>() 
+            ?: throw ErrorLoadingException("Gagal mengambil data detail dari API")
             
         val title = response.title ?: response.name ?: ""
-        val poster = "https://image.tmdb.org/t/p/w500${response.posterPath}"
-        val actors = response.cast?.mapNotNull { Actor(it.name ?: "", if (it.profilePath.isNullOrEmpty()) null else "https://image.tmdb.org/t/p/w185${it.profilePath}") }
+        val poster = if (response.posterPath.isNullOrEmpty() || response.posterPath == "null") "" else "https://image.tmdb.org/t/p/w500${response.posterPath}"
+        val background = if (response.backdropPath.isNullOrEmpty() || response.backdropPath == "null") "" else "https://image.tmdb.org/t/p/w1280${response.backdropPath}"
+        val plot = response.overview
+        val year = (response.releaseDate ?: response.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
+        
+        val ratingStr = response.voteAverage?.toFloatOrNull()?.times(10)?.toInt()?.toString()
+        val trailer = response.trailerUrl
+        val tags = response.genres?.mapNotNull { it.name }
+        
+        val actors = response.cast?.mapNotNull {
+            val actorName = it.name ?: return@mapNotNull null
+            val pPath = it.profilePath
+            val profile = if (pPath.isNullOrEmpty() || pPath == "null") null else "https://image.tmdb.org/t/p/w185$pPath"
+            Actor(actorName, profile)
+        }
 
         return if (isSeries) {
             val episodes = arrayListOf<Episode>()
+            val firstSeasonId = response.firstSeason?.id
+            
             response.seasons?.forEach { season ->
-                val sNum = season.seasonNumber
-                app.get("$mainUrl/api/seasons/${season.id}").parsedSafe<Season>()?.episodes?.forEach { ep ->
-                    // KUNCI: Kita tandai ID dengan "|series"
-                    episodes.add(newEpisode("${ep.id}|series") {
-                        this.name = ep.name; this.season = sNum; this.episode = ep.episodeNumber
-                        this.posterUrl = "https://image.tmdb.org/t/p/w500${ep.stillPath}"
-                    })
+                val seasonId = season.id ?: return@forEach
+                val seasonNumber = season.seasonNumber
+                
+                if (seasonId == firstSeasonId) {
+                    response.firstSeason?.episodes?.forEach { ep ->
+                        val epId = ep.id ?: ""
+                        val still = ep.stillPath
+                        val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                        
+                        episodes.add(newEpisode(epId) {
+                            this.name = ep.name
+                            this.season = seasonNumber
+                            this.episode = ep.episodeNumber
+                            this.posterUrl = epPoster
+                        })
+                    }
+                } else {
+                    val seasonUrl = "$mainUrl/api/seasons/$seasonId"
+                    try {
+                        val seasonResponse = app.get(seasonUrl).parsedSafe<Season>()
+                        seasonResponse?.episodes?.forEach { ep ->
+                            val epId = ep.id ?: ""
+                            val still = ep.stillPath
+                            val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
+                            
+                            episodes.add(newEpisode(epId) {
+                                this.name = ep.name
+                                this.season = seasonNumber
+                                this.episode = ep.episodeNumber
+                                this.posterUrl = epPoster
+                            })
+                        }
+                    } catch (e: Exception) {}
                 }
             }
+            
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster; this.plot = response.overview; addActors(actors); addTrailer(response.trailerUrl)
+                this.posterUrl = poster
+                this.backgroundPosterUrl = background
+                this.year = year
+                this.plot = plot
+                this.tags = tags
+                this.score = Score.from10(ratingStr)
+                addActors(actors)
+                addTrailer(trailer)
             }
         } else {
-            // KUNCI: Kita tandai ID dengan "|movie"
-            newMovieLoadResponse(title, url, TvType.Movie, "${response.id}|movie") {
-                this.posterUrl = poster; this.plot = response.overview; addActors(actors); addTrailer(response.trailerUrl)
+            val movieId = response.id ?: url
+            newMovieLoadResponse(title, url, TvType.Movie, movieId) {
+                this.posterUrl = poster
+                this.backgroundPosterUrl = background
+                this.year = year
+                this.plot = plot
+                this.tags = tags
+                this.score = Score.from10(ratingStr)
+                addActors(actors)
+                addTrailer(trailer)
             }
         }
     }
 
+    // --- MENDAPATKAN LINK VIDEO (SISTEM BARU) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -106,100 +199,179 @@ class IdlixProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            val parts = data.split("|")
-            val contentId = parts[0]
-            val contentType = parts.getOrNull(1) ?: "movie"
+            // 1. Dapatkan slug dan tipe dari URL (contoh data: https://z1.idlixku.com/movie/nama-film)
+            val isSeries = data.contains("/series/")
+            val slug = data.split("/").last()
+            val apiUrl = "$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug"
+            
+            // 2. Ambil UUID (Content ID) dari API
+            val detailResponse = app.get(apiUrl).parsedSafe<IdlixDetailResponse>() ?: return false
+            val contentId = detailResponse.id ?: return false
 
-            // 1. Ambil Clearance Tiket
-            val clearanceRes = app.post("$mainUrl/api/adblock/clearance").text
-            val clearanceToken = AppUtils.tryParseJson<TokenResponse>(clearanceRes)?.token 
-                                ?: clearanceRes.trim().replace("\"", "")
+            // 3. Tahap 0: Meminta Clearance Token
+            val clearanceRes = app.post(
+                url = "$mainUrl/api/adblock/clearance",
+                headers = mapOf("Referer" to data, "Origin" to mainUrl)
+            ).parsedSafe<ClearanceResponse>()
+            
+            val tokenClear = clearanceRes?.token ?: return false
 
-            // 2. Minta Challenge & Signature dari Server
+            // 4. Tahap 1: Meminta Challenge & Signature
             val challengeRes = app.post(
                 url = "$mainUrl/api/watch/challenge",
-                data = mapOf("contentType" to contentType, "contentId" to contentId, "clearance" to clearanceToken),
-                headers = mapOf("Content-Type" to "application/json", "Referer" to "$mainUrl/")
+                json = mapOf(
+                    "contentType" to if (isSeries) "series" else "movie",
+                    "contentId" to contentId,
+                    "clearance" to tokenClear
+                ),
+                headers = mapOf("Referer" to data, "Origin" to mainUrl)
             ).parsedSafe<ChallengeResponse>() ?: return false
 
             val challenge = challengeRes.challenge ?: return false
-            val signature = challengeRes.signature ?: ""
-            val diff = challengeRes.difficulty ?: 4 // Idlix sekarang pakai 4 nol
+            val signature = challengeRes.signature ?: return false
+            val difficulty = challengeRes.difficulty ?: 3
 
-            // 3. Menambang Nonce (Sesuai Simulasi Termux)
-            var nonce = 0
-            val target = "0".repeat(diff)
-            val md = MessageDigest.getInstance("SHA-256")
-            while (nonce < 2000000) {
-                val input = "$challenge$nonce"
-                val hash = md.digest(input.toByteArray()).joinToString("") { "%02x".format(it) }
-                if (hash.startsWith(target)) break
-                nonce++
-            }
+            // 5. Tahap 2: Menambang Nonce
+            val nonce = mineNonce(challenge, difficulty) ?: return false
 
-            // 4. Kirim Solusi untuk dapatkan embedUrl
+            // 6. Tahap 3: Kirim Solusi (Solve)
             val solveRes = app.post(
                 url = "$mainUrl/api/watch/solve",
-                data = mapOf("challenge" to challenge, "signature" to signature, "nonce" to nonce.toString()),
-                headers = mapOf("Content-Type" to "application/json", "Referer" to "$mainUrl/")
+                json = mapOf(
+                    "challenge" to challenge,
+                    "signature" to signature,
+                    "nonce" to nonce
+                ),
+                headers = mapOf("Referer" to data, "Origin" to mainUrl)
             ).parsedSafe<SolveResponse>()
 
-            val embedPath = solveRes?.embedUrl ?: solveRes?.url ?: return false
-            val fullEmbedUrl = if (embedPath.startsWith("http")) embedPath else "$mainUrl$embedPath"
-
-            // 5. Buka Embed, ambil Jeniusplay, eksekusi Extractor
-            val embedHtml = app.get(fullEmbedUrl, referer = "$mainUrl/").text
-            val jeniusLink = """https://jeniusplay\.com/video/[a-zA-Z0-9]+""".toRegex().find(embedHtml)?.value
+            val embedPath = solveRes?.embedUrl ?: return false
+            val fullEmbedUrl = if (embedPath.startsWith("/")) "$mainUrl$embedPath" else embedPath
             
-            if (jeniusLink != null) {
-                loadExtractor(jeniusLink, fullEmbedUrl, subtitleCallback, callback)
-                return true
+            // 7. Tahap 4: Eksekusi Embed URL untuk mendapatkan Iframe
+            val embedHtml = app.get(fullEmbedUrl, headers = mapOf("Referer" to data)).document
+            
+            // Cari link di dalam tag iframe (Mengarah ke Jeniusplay)
+            val iframeSrc = embedHtml.selectFirst("iframe")?.attr("src") 
+            
+            if (!iframeSrc.isNullOrEmpty()) {
+                // Lempar link iframe ke Extractor
+                loadExtractor(iframeSrc, data, subtitleCallback, callback)
+            } else {
+                Log.d("adixtream", "Iframe tidak ditemukan. HTML: ${embedHtml.html()}")
             }
-        } catch (e: Exception) { 
-            Log.d("Idlix", "Gagal load links: ${e.message}") 
+
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
         }
-        return false
+    }
+
+    // --- FUNGSI BANTUAN MINING (SHA-256) ---
+    private fun sha256(input: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun mineNonce(challenge: String, difficulty: Int): Int? {
+        val target = "0".repeat(difficulty)
+        for (nonce in 0..1000000) {
+            if (sha256("$challenge$nonce").startsWith(target)) {
+                return nonce
+            }
+        }
+        return null
     }
 }
 
-// DATA CLASSES
-data class TokenResponse(@JsonProperty("token") val token: String? = null)
-data class ChallengeResponse(
-    @JsonProperty("challenge") val challenge: String? = null,
-    @JsonProperty("signature") val signature: String? = null,
-    @JsonProperty("difficulty") val difficulty: Int? = null
-)
-data class SolveResponse(
-    @JsonProperty("embedUrl") val embedUrl: String? = null,
-    @JsonProperty("url") val url: String? = null
-)
+// ============================================================================
+// DATA CLASSES 
+// ============================================================================
+
 data class IdlixApiResponse(
     @JsonProperty("data") val data: List<IdlixItem>? = null,
     @JsonProperty("results") val results: List<IdlixItem>? = null,
     @JsonProperty("items") val items: List<IdlixItem>? = null,
     @JsonProperty("pagination") val pagination: Pagination? = null
 )
-data class Pagination(@JsonProperty("page") val page: Int? = null, @JsonProperty("totalPages") val totalPages: Int? = null)
+
+data class Pagination(
+    @JsonProperty("page") val page: Int? = null,
+    @JsonProperty("totalPages") val totalPages: Int? = null
+)
+
 data class IdlixItem(
+    @JsonProperty("id") val id: String? = null,
     @JsonProperty("title") val title: String? = null,
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("slug") val slug: String? = null,
     @JsonProperty("posterPath") val posterPath: String? = null,
     @JsonProperty("contentType") val contentType: String? = null,
-    @JsonProperty("quality") val quality: String? = null
+    @JsonProperty("quality") val quality: String? = null,
+    @JsonProperty("voteAverage") val voteAverage: String? = null
 )
+
 data class IdlixDetailResponse(
     @JsonProperty("id") val id: String? = null,
     @JsonProperty("title") val title: String? = null,
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("overview") val overview: String? = null,
     @JsonProperty("posterPath") val posterPath: String? = null,
+    @JsonProperty("backdropPath") val backdropPath: String? = null,
+    @JsonProperty("voteAverage") val voteAverage: String? = null,
+    @JsonProperty("firstAirDate") val firstAirDate: String? = null,
+    @JsonProperty("releaseDate") val releaseDate: String? = null,
     @JsonProperty("trailerUrl") val trailerUrl: String? = null,
+    @JsonProperty("genres") val genres: List<Genre>? = null,
     @JsonProperty("cast") val cast: List<Cast>? = null,
-    @JsonProperty("seasons") val seasons: List<Season>? = null
+    @JsonProperty("seasons") val seasons: List<Season>? = null,
+    @JsonProperty("firstSeason") val firstSeason: Season? = null
 )
-data class Cast(@JsonProperty("name") val name: String? = null, @JsonProperty("profilePath") val profilePath: String? = null)
-data class Season(@JsonProperty("id") val id: String? = null, @JsonProperty("seasonNumber") val seasonNumber: Int? = null, @JsonProperty("episodes") val episodes: List<EpisodeData>? = null)
-data class EpisodeData(@JsonProperty("id") val id: String? = null, @JsonProperty("episodeNumber") val episodeNumber: Int? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("stillPath") val stillPath: String? = null)
-data class ResponseSource(@JsonProperty("videoSource") val videoSource: String = "")
-data class Tracks(@JsonProperty("file") val file: String = "", @JsonProperty("label") val label: String? = null)
+
+data class Genre(@JsonProperty("name") val name: String? = null)
+
+data class Cast(
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("profilePath") val profilePath: String? = null
+)
+
+data class Season(
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("seasonNumber") val seasonNumber: Int? = null,
+    @JsonProperty("episodes") val episodes: List<EpisodeData>? = null
+)
+
+data class EpisodeData(
+    @JsonProperty("id") val id: String? = null,
+    @JsonProperty("episodeNumber") val episodeNumber: Int? = null,
+    @JsonProperty("name") val name: String? = null,
+    @JsonProperty("stillPath") val stillPath: String? = null
+)
+
+data class ResponseSource(
+    @JsonProperty("hls") val hls: Boolean = false,
+    @JsonProperty("videoSource") val videoSource: String = "",
+    @JsonProperty("securedLink") val securedLink: String? = null
+)
+
+data class Tracks(
+    @JsonProperty("kind") val kind: String? = null,
+    @JsonProperty("file") val file: String = "",
+    @JsonProperty("label") val label: String? = null
+)
+
+// Data Class Baru untuk API Watch Idlix
+data class ClearanceResponse(
+    @JsonProperty("token") val token: String? = null
+)
+
+data class ChallengeResponse(
+    @JsonProperty("challenge") val challenge: String? = null,
+    @JsonProperty("signature") val signature: String? = null,
+    @JsonProperty("difficulty") val difficulty: Int? = 3
+)
+
+data class SolveResponse(
+    @JsonProperty("embedUrl") val embedUrl: String? = null
+)
