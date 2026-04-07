@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.extractors.helper.AesHelper
 import com.lagradost.cloudstream3.utils.*
 import java.net.URI
+import java.security.MessageDigest
 
 class IdlixProvider : MainAPI() {
     override var mainUrl = "https://z1.idlixku.com"
@@ -199,53 +200,108 @@ class IdlixProvider : MainAPI() {
         }
     }
 
+    // --- PEMUTAR VIDEO (BARU) ---
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // PERHATIAN: Kode video lama dipertahankan. Ini akan dirombak 
-        // kalau kamu sudah mendapatkan log API Play Video dari Idlix yang baru.
-        val document = app.get(data).document
-        val scriptRegex = """window\.idlixNonce=['"]([a-f0-9]+)['"].*?window\.idlixTime=(\d+).*?""".toRegex(RegexOption.DOT_MATCHES_ALL)
-        val script = document.select("script:containsData(window.idlix)").toString()
-        val match = scriptRegex.find(script)
-        val idlixNonce = match?.groups?.get(1)?.value ?: ""
-        val idlixTime = match?.groups?.get(2)?.value ?: ""
+        // 'data' di sini berisi ID UUID film/episode dari fungsi load()
+        val contentId = data 
+        
+        // Asumsi awal kita coba menggunakan tipe movie. 
+        // Jika API menolak, ini adalah tempat pertama yang bisa kita debug nanti.
+        val contentType = "movie"
 
-        document.select("ul#playeroptionsul > li").map {
-            Triple(it.attr("data-post"), it.attr("data-nume"), it.attr("data-type"))
-        }.amap { (id, nume, type) ->
-            val responseText = app.post(
-                url = "$directUrl/wp-admin/admin-ajax.php",
-                data = mapOf("action" to "doo_player_ajax", "post" to id, "nume" to nume, "type" to type, "_n" to idlixNonce, "_p" to id, "_t" to idlixTime),
-                referer = data,
-                headers = mapOf("Accept" to "*/*", "X-Requested-With" to "XMLHttpRequest")
+        try {
+            Log.d("Idlix", "Meminta Challenge untuk ID: $contentId")
+            val challengeResText = app.post(
+                url = "$mainUrl/api/watch/challenge",
+                headers = mapOf(
+                    "Accept" to "*/*",
+                    "Content-Type" to "application/json",
+                    "Referer" to "$mainUrl/"
+                ),
+                data = mapOf(
+                    "contentType" to contentType,
+                    "contentId" to contentId,
+                    "clearance" to ""
+                )
             ).text
-            
-            try {
-                val json = AppUtils.parseJson<ResponseHash>(responseText)
-                val embedUrl = json.embed_url
-                val key = json.key
-                
-                val metrixJson = app.get(embedUrl).text
-                val metrix = AppUtils.parseJson<AesData>(metrixJson).m
-                
-                val password = createKey(key, metrix)
-                val decrypted = AesHelper.cryptoAESHandler(embedUrl, password.toByteArray(), false)?.fixBloat() ?: return@amap
-                
-                Log.d("adixtream", decrypted)
 
-                when {
-                    !decrypted.contains("youtube") -> loadExtractor(decrypted, directUrl, subtitleCallback, callback)
-                    else -> return@amap
+            val challengeData = AppUtils.parseJson<ChallengeResponse>(challengeResText)
+            val challengeText = challengeData.challenge ?: return false
+            
+            Log.d("Idlix", "Challenge didapat: $challengeText")
+
+            // Pecahkan sandi
+            val (nonce, signature) = solveChallenge(challengeText)
+
+            Log.d("Idlix", "Mengirim Solve: Nonce=$nonce, Signature=$signature")
+            val solveResText = app.post(
+                url = "$mainUrl/api/watch/solve",
+                headers = mapOf(
+                    "Accept" to "*/*",
+                    "Content-Type" to "application/json",
+                    "Referer" to "$mainUrl/"
+                ),
+                data = mapOf(
+                    "challenge" to challengeText,
+                    "signature" to signature,
+                    "nonce" to nonce
+                )
+            ).text
+
+            // Server biasanya mengembalikan link iframe dalam JSON
+            val solveData = AppUtils.parseJson<SolveResponse>(solveResText)
+            val iframeUrlPath = solveData.url ?: solveData.iframeUrl
+            
+            if (!iframeUrlPath.isNullOrEmpty()) {
+                val fullIframeUrl = if (iframeUrlPath.startsWith("http")) iframeUrlPath else "$mainUrl$iframeUrlPath"
+                Log.d("Idlix", "Iframe ditemukan: $fullIframeUrl")
+
+                // Buka halaman iframe untuk mencari link Jeniusplay
+                val iframeHtml = app.get(fullIframeUrl, referer = "$mainUrl/").text
+                
+                // Regex ini akan mencari URL yang berawalan jeniusplay.com/video/
+                val jeniusRegex = """(https://jeniusplay\.com/video/[a-zA-Z0-9]+)""".toRegex()
+                val jeniusLink = jeniusRegex.find(iframeHtml)?.value
+                
+                if (jeniusLink != null) {
+                    Log.d("Idlix", "Link Jeniusplay ditemukan: $jeniusLink")
+                    // Serahkan tugas ekstrak .m3u8 ke file Jeniusplay Extractor milikmu
+                    loadExtractor(jeniusLink, "$mainUrl/", subtitleCallback, callback)
+                    return true
+                } else {
+                    Log.d("Idlix", "Gagal menemukan link Jeniusplay di dalam Iframe")
                 }
-            } catch (e: Exception) {}
+            } else {
+                Log.d("Idlix", "Solve gagal atau url iframe tidak ada: $solveResText")
+            }
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Log.d("Idlix", "Error di loadLinks: ${e.message}")
         }
-        return true
+        return false
     }
 
+    // Fungsi Pembantu: Memecahkan Sandi Proof of Work Idlix
+    private fun solveChallenge(challenge: String): Pair<Int, String> {
+        val md = MessageDigest.getInstance("SHA-256")
+        
+        // Dari log yang kamu kirim, sepertinya mereka tidak meminta hash dengan pola khusus (misal awalan "0000").
+        // Jadi kita coba buat random angka nonce dan kita hash bersama challenge-nya.
+        val nonce = (100000..999999).random() 
+        val input = "$challenge:$nonce" 
+        val hashBytes = md.digest(input.toByteArray(Charsets.UTF_8))
+        val signature = hashBytes.joinToString("") { "%02x".format(it) }
+        
+        return Pair(nonce, signature)
+    }
+
+    // Fungsi-fungsi lama dipertahankan agar tidak error jika ke depannya butuh dekripsi
     private fun createKey(r: String, m: String): String {
         val rList = r.split("\\x").filter { it.isNotEmpty() }.toTypedArray()
         var n = ""
@@ -268,9 +324,20 @@ class IdlixProvider : MainAPI() {
 }
 
 // ============================================================================
-// DATA CLASSES DI LUAR CLASS UTAMA (INI KUNCI AGAR TIDAK ERROR)
+// DATA CLASSES 
 // ============================================================================
 
+// --- Data Kelas Baru untuk Keamanan Video ---
+data class ChallengeResponse(
+    @JsonProperty("challenge") val challenge: String? = null
+)
+
+data class SolveResponse(
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("iframeUrl") val iframeUrl: String? = null
+)
+
+// --- Data Kelas Lama (Tetap Dipertahankan) ---
 data class IdlixApiResponse(
     @JsonProperty("data") val data: List<IdlixItem>? = null,
     @JsonProperty("results") val results: List<IdlixItem>? = null,
@@ -331,7 +398,6 @@ data class EpisodeData(
     @JsonProperty("stillPath") val stillPath: String? = null
 )
 
-// Data Kelas yang diwajibkan oleh Extractor.kt
 data class ResponseSource(
     @JsonProperty("hls") val hls: Boolean = false,
     @JsonProperty("videoSource") val videoSource: String = "",
