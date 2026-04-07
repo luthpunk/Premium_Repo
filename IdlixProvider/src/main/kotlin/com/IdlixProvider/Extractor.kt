@@ -6,6 +6,8 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class Jeniusplay : ExtractorApi() {
     override var name = "Jeniusplay"
@@ -19,7 +21,7 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            // 1. Ekstrak HASH dengan benar dari format URL baru (/video/HASH)
+            // 1. Ekstrak HASH dari format URL (/video/HASH)
             val hash = url.split("/").last().substringAfter("data=")
             Log.d("adixtream", "Hash Jeniusplay: $hash")
 
@@ -40,7 +42,7 @@ class Jeniusplay : ExtractorApi() {
                 }
             }
 
-            // 3. Tembak API Asli Jeniusplay (Yang kita sangka sudah mati)
+            // 3. Tembak API Asli Jeniusplay 
             val apiUrl = "$mainUrl/player/index.php?data=$hash&do=getVideo"
             Log.d("adixtream", "Menembak API: $apiUrl")
             
@@ -62,14 +64,15 @@ class Jeniusplay : ExtractorApi() {
                 // Ekstraktor Utama
                 generateM3u8(name, m3u8Url, mainUrl).forEach(callback)
                 
-                // Ekstraktor Cadangan (Direct Player) jika Cloudstream menolak URL aneh
+                // Ekstraktor Cadangan (Direct Player)
+                // PENGGUNAAN API BARU: newExtractorLink
                 callback.invoke(
-                    ExtractorLink(
+                    newExtractorLink(
                         source = name,
                         name = "$name (Direct)",
                         url = m3u8Url,
                         referer = referer ?: mainUrl,
-                        quality = com.lagradost.cloudstream3.utils.Qualities.Unknown.value,
+                        quality = Qualities.Unknown.value,
                         isM3u8 = true
                     )
                 )
