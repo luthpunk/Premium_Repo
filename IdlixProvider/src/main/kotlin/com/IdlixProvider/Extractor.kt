@@ -25,10 +25,7 @@ class Jeniusplay : ExtractorApi() {
 
         val response = app.post(
             url = "$mainUrl/player/index.php?data=$hash&do=getVideo",
-            data = mapOf(
-                "hash" to hash, 
-                "r" to (referer ?: "")
-            ),
+            data = mapOf("hash" to hash, "r" to (referer ?: "")),
             headers = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "Origin" to mainUrl,
@@ -47,7 +44,7 @@ class Jeniusplay : ExtractorApi() {
                 try {
                     val unpacked = getAndUnpack(script.data())
                     val subData = unpacked.substringAfter("\"tracks\":[").substringBefore("],")
-                    AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.map { subtitle ->
+                    AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.forEach { subtitle ->
                         subtitleCallback.invoke(
                             newSubtitleFile(
                                 getLanguage(subtitle.label ?: ""),
