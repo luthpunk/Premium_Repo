@@ -23,36 +23,26 @@ class Jeniusplay : ExtractorApi() {
         val document = app.get(url, referer = referer).document
         val hash = url.split("/").last().substringAfter("data=")
 
-        val response = app.post(
+        val m3uLink = app.post(
             url = "$mainUrl/player/index.php?data=$hash&do=getVideo",
-            data = mapOf("hash" to hash, "r" to (referer ?: "")),
-            headers = mapOf(
-                "X-Requested-With" to "XMLHttpRequest",
-                "Origin" to mainUrl,
-                "Referer" to url
-            )
-        ).parsedSafe<ResponseSource>()
+            data = mapOf("hash" to hash, "r" to "$referer"),
+            referer = referer,
+            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+        ).parsed<ResponseSource>().videoSource.replace(".txt",".m3u8")
 
-        val videoSource = response?.videoSource
-        if (!videoSource.isNullOrEmpty()) {
-            val m3uLink = videoSource.replace(".txt", ".m3u8")
-            generateM3u8(name, m3uLink, mainUrl).forEach(callback)
-        }
+        generateM3u8(name, m3uLink, mainUrl).forEach(callback)
 
         document.select("script").forEach { script ->
             if (script.data().contains("eval(function(p,a,c,k,e,d)")) {
-                try {
-                    val unpacked = getAndUnpack(script.data())
-                    val subData = unpacked.substringAfter("\"tracks\":[").substringBefore("],")
-                    AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.forEach { subtitle ->
-                        subtitleCallback.invoke(
-                            newSubtitleFile(
-                                getLanguage(subtitle.label ?: ""),
-                                subtitle.file
-                            )
+                val subData = getAndUnpack(script.data()).substringAfter("\"tracks\":[").substringBefore("],")
+                AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.map { subtitle ->
+                    subtitleCallback.invoke(
+                        newSubtitleFile(
+                            getLanguage(subtitle.label ?: ""),
+                            subtitle.file
                         )
-                    }
-                } catch (e: Exception) { }
+                    )
+                }
             }
         }
     }
