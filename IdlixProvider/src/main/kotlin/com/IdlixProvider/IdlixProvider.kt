@@ -31,63 +31,116 @@ class IdlixProvider : MainAPI() {
         "$mainUrl/genre/thriller" to "Thriller"
     )
 
-    // --- BERANDA ---
+    // --- BERANDA & KATEGORI ---
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
-
         val url = request.data
-        val responseText = app.get(url).text
-     
-        val homeItems = mutableListOf<SearchResponse>()
 
-        try {
-            val parsed = AppUtils.parseJson<IdlixHomepageResponse>(responseText)
-            val allSections = mutableListOf<HomepageSection>()
-            
-            parsed.above?.let { allSections.addAll(it) }
-            parsed.below?.let { allSections.addAll(it) }
+        // 1. JIKA REQUEST ADALAH BERANDA
+        if (url.contains("/api/homepage")) {
+            if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
-            for (section in allSections) {
-                val sectionData = section.data ?: continue
+            val responseText = app.get(url).text
+            val homeItems = mutableListOf<SearchResponse>()
+
+            try {
+                val parsed = AppUtils.parseJson<IdlixHomepageResponse>(responseText)
+                val allSections = mutableListOf<HomepageSection>()
                 
-                if (section.type == "latest_episodes") continue 
+                parsed.above?.let { allSections.addAll(it) }
+                parsed.below?.let { allSections.addAll(it) }
 
-                for (item in sectionData) {
-                   
-                    val content = item.getActualContent()
-                    val title = content.title ?: continue
-                    val slug = content.slug ?: continue
+                for (section in allSections) {
+                    val sectionData = section.data ?: continue
                     
-                    val typeRaw = item.contentType ?: content.contentType ?: ""
-                    val isSeries = typeRaw.contains("series", true) || typeRaw.contains("episode", true)
+                    if (section.type == "latest_episodes") continue 
+
+                    for (item in sectionData) {
+                        val content = item.getActualContent()
+                        val title = content.title ?: continue
+                        val slug = content.slug ?: continue
+                        
+                        val typeRaw = item.contentType ?: content.contentType ?: ""
+                        val isSeries = typeRaw.contains("series", true) || typeRaw.contains("episode", true)
+                        val type = if (isSeries) TvType.TvSeries else TvType.Movie
+                        
+                        val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
+                        val posterPath = content.posterPath
+      
+                        val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
+                                        else "https://image.tmdb.org/t/p/w342$posterPath"
+
+                        homeItems.add(
+                            newMovieSearchResponse(title, href, type) {
+                                this.posterUrl = posterUrl
+                                this.quality = getQualityFromString(content.quality ?: "")
+                            }
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("adixtream", "Gagal parse halaman utama: ${e.message}")
+                e.printStackTrace()
+            }
+
+            return newHomePageResponse(request.name, homeItems.distinctBy { it.url }, hasNext = false)
+        } 
+        
+        // 2. JIKA REQUEST ADALAH KATEGORI (MOVIE, SERIES, GENRE)
+        else {
+            // Merakit URL API yang benar berdasarkan tebakan cemerlangmu
+            val apiUrl = when {
+                url.endsWith("/movie") -> "$mainUrl/api/movies?page=$page&limit=36&sort=createdAt"
+                url.endsWith("/series") -> "$mainUrl/api/series?page=$page&limit=36&sort=createdAt"
+                url.contains("/genre/") -> {
+                    val genre = url.substringAfterLast("/")
+                    "$mainUrl/api/movies?genres=$genre&page=$page&limit=36&sort=createdAt"
+                }
+                else -> url
+            }
+
+            Log.d("adixtream", "Memuat Kategori: $apiUrl")
+            val responseText = app.get(apiUrl).text
+            val categoryItems = mutableListOf<SearchResponse>()
+            var hasNextPage = false
+
+            try {
+                val parsed = AppUtils.parseJson<IdlixPaginatedResponse>(responseText)
+                val items = parsed.data ?: emptyList()
+                
+                // Cek pagination untuk fitur Infinite Scroll
+                val currentPage = parsed.pagination?.page ?: page
+                val totalPages = parsed.pagination?.totalPages ?: 1
+                hasNextPage = currentPage < totalPages
+
+                for (item in items) {
+                    val title = item.title ?: item.originalTitle ?: continue
+                    val slug = item.slug ?: continue
+                    
+                    val typeRaw = item.contentType ?: ""
+                    val isSeries = typeRaw.contains("series", true) || url.contains("series")
                     val type = if (isSeries) TvType.TvSeries else TvType.Movie
                     
                     val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
-                    val posterPath = content.posterPath
-  
+                    val posterPath = item.posterPath
                     val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
                                     else "https://image.tmdb.org/t/p/w342$posterPath"
 
-                    homeItems.add(
-               
+                    categoryItems.add(
                         newMovieSearchResponse(title, href, type) {
                             this.posterUrl = posterUrl
-                            this.quality = getQualityFromString(content.quality ?: "")
+                            this.quality = getQualityFromString(item.quality ?: "")
                         }
-  
                     )
                 }
+            } catch (e: Exception) {
+                Log.e("adixtream", "Gagal parse kategori $url: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.e("adixtream", "Gagal parse halaman utama: ${e.message}")
-            e.printStackTrace()
-        }
 
-     
-        return newHomePageResponse(request.name, homeItems.distinctBy { it.url }, hasNext = false)
+            return newHomePageResponse(request.name, categoryItems.distinctBy { it.url }, hasNext = hasNextPage)
+        }
     }
 
     // --- PENCARIAN ---
@@ -354,6 +407,18 @@ class IdlixProvider : MainAPI() {
 // ============================================================================
 // DATA CLASSES (Next.js API Idlix)
 // ============================================================================
+
+// --- Tambahan Baru untuk Kategori / Pagination ---
+data class IdlixPaginatedResponse(
+    @JsonProperty("data") val data: List<ContentData>? = null,
+    @JsonProperty("pagination") val pagination: PaginationData? = null
+)
+
+data class PaginationData(
+    @JsonProperty("page") val page: Int? = null,
+    @JsonProperty("totalPages") val totalPages: Int? = null
+)
+// -------------------------------------------------
 
 data class IdlixHomepageResponse(
     @JsonProperty("above") val above: List<HomepageSection>? = null,
