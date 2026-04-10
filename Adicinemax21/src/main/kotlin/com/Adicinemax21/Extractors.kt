@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 
 // ==============================
-// NEW UPDATED JENIUSPLAY EXTRACTOR
+// NEW UPDATED & BULLETPROOF JENIUSPLAY EXTRACTOR
 // ==============================
 
 class Jeniusplay : ExtractorApi() {
@@ -43,9 +43,9 @@ class Jeniusplay : ExtractorApi() {
             // 3. Bongkar Javascript Packer
             val unpackedText = getAndUnpack(htmlContent).replace("\\/", "/")
             
-            // 4. Cari Link Video (Fokus ekstensi master.txt / .m3u8)
-            val videoRegex = """(https?://[^"'\s]+(?:master\.txt|\.m3u8))""".toRegex()
-            var videoUrl = videoRegex.find(unpackedText)?.groupValues?.get(1)
+            // 4. Cari Link Video (Bypass manipulasi .woff / .txt)
+            val videoRegex = """(https?://[^"'\s]+(?:master\.txt|\.m3u8|\.woff|\.txt))""".toRegex()
+            var videoUrl = videoRegex.find(unpackedText)?.groupValues?.get(1)?.replace(".woff", ".m3u8")?.replace(".txt", ".m3u8")
 
             // 5. Fallback ke API do=getVideo jika regex gagal
             if (videoUrl.isNullOrEmpty()) {
