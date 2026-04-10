@@ -21,9 +21,14 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // Merombak kunci menjadi URL API Asli agar Cache lama tertimpa (Bypass Cache)
+    // --- DAFTAR MENU (Anti-Cache / Langsung Pakai API) ---
     override val mainPage = mainPageOf(
         "$mainUrl/api/homepage" to "Beranda",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=netflix" to "Netflix",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=prime-video" to "Prime Video",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=hbo" to "HBO",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=disney-plus" to "Disney+",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=apple-tv-plus" to "Apple TV+",
         "$mainUrl/api/movies?page=1&limit=36&sort=createdAt" to "Movie",
         "$mainUrl/api/series?page=1&limit=36&sort=createdAt" to "Series",
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=horror" to "Horror",
@@ -89,7 +94,7 @@ class IdlixProvider : MainAPI() {
             return newHomePageResponse(request.name, homeItems.distinctBy { it.url }, hasNext = false)
         } 
         
-        // 2. JIKA REQUEST ADALAH KATEGORI (MOVIE, SERIES, GENRE)
+        // 2. JIKA REQUEST ADALAH KATEGORI (MOVIE, SERIES, GENRE, NETWORK)
         else {
             // Trik jitu: URL sudah berupa API, tinggal ubah parameter page=1 menjadi halaman saat ini
             val apiUrl = url.replace("page=1", "page=$page")
@@ -150,14 +155,12 @@ class IdlixProvider : MainAPI() {
         val responseText = app.get(url).text
         val searchItems = mutableListOf<SearchResponse>()
         
-       
         try {
             val parsed = AppUtils.parseJson<IdlixSearchResponse>(responseText)
             val items = parsed.data ?: parsed.results ?: emptyList()
             
             for (item in items) {
                 val title = item.title ?: item.originalTitle ?: continue
-             
                 val slug = item.slug ?: continue
                 
                 val typeRaw = item.contentType ?: ""
@@ -171,14 +174,12 @@ class IdlixProvider : MainAPI() {
 
                 searchItems.add(
                     newMovieSearchResponse(title, href, type) {
-                        
                         this.posterUrl = posterUrl
                         this.quality = getQualityFromString(item.quality ?: "")
                     }
                 )
             }
         } catch (e: Exception) {
-          
             Log.e("adixtream", "Gagal parse search: ${e.message}")
         }
 
@@ -213,20 +214,17 @@ class IdlixProvider : MainAPI() {
         }
 
         if (isSeries) {
- 
             val episodes = arrayListOf<Episode>()
             val seasonNamesList = mutableListOf<SeasonData>()
             
             val totalSeasons = response.numberOfSeasons ?: 1 
             
             for (seasonNum in 1..totalSeasons) {
-             
                 val seasonApiUrl = "$mainUrl/api/series/$slug/season/$seasonNum"
                 try {
                     val seasonResText = app.get(seasonApiUrl).text
                     val parsedSeason = AppUtils.parseJson<IdlixSeasonApiResponse>(seasonResText)
                     
-           
                     val epList = parsedSeason.season?.episodes
                     
                     if (!epList.isNullOrEmpty()) {
@@ -242,21 +240,17 @@ class IdlixProvider : MainAPI() {
                             
                                 episodes.add(newEpisode(loadData) {
                                     this.name = ep.name
-                         
                                     this.season = seasonNum
                                     this.episode = ep.episodeNumber
                                     this.posterUrl = epPoster
-           
                                     this.description = ep.overview
                                 })
                             }
-             
                         }
                     }
                 } catch (e: Exception) {
                     Log.e("adixtream", "Gagal memuat Season $seasonNum: ${e.message}")
                 }
-        
             }
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -264,7 +258,6 @@ class IdlixProvider : MainAPI() {
                 this.backgroundPosterUrl = background
                 this.year = year
                 this.plot = plot
-       
                 this.tags = tags
                 this.score = Score.from10(ratingStr)
                 addSeasonNames(seasonNamesList) 
@@ -284,7 +277,6 @@ class IdlixProvider : MainAPI() {
                 this.tags = tags
                 this.score = Score.from10(ratingStr)
                 if (actors != null) addActors(actors)
-       
                 addTrailer(trailer)
             }
         }
@@ -297,7 +289,6 @@ class IdlixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-     
         try {
             Log.d("adixtream", "Mulai loadLinks dengan data: $data")
             
@@ -312,7 +303,6 @@ class IdlixProvider : MainAPI() {
             val challengeRes = app.post(
                 url = "$mainUrl/api/watch/challenge",
                 json = mapOf(
-                   
                     "contentType" to contentType,
                     "contentId" to contentId
                 ),
@@ -320,7 +310,6 @@ class IdlixProvider : MainAPI() {
             ).parsedSafe<ChallengeResponse>()
 
             val challenge = challengeRes?.challenge ?: return false
- 
             val signature = challengeRes.signature ?: return false
             val difficulty = challengeRes.difficulty ?: 3
             
@@ -328,13 +317,11 @@ class IdlixProvider : MainAPI() {
             val nonce = mineNonce(challenge, difficulty)
             if (nonce == null) return false
 
-   
             val solveRes = app.post(
                 url = "$mainUrl/api/watch/solve",
                 json = mapOf(
                     "challenge" to challenge,
                     "signature" to signature,
-        
                     "nonce" to nonce
                 ),
                 headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
@@ -349,19 +336,16 @@ class IdlixProvider : MainAPI() {
             val finalUrl = embedResponse.url
             
             if (finalUrl.contains("jeniusplay.com")) {
- 
                 Log.d("adixtream", "Redirected ke Jeniusplay: $finalUrl")
                 loadExtractor(finalUrl, fullEmbedUrl, subtitleCallback, callback)
             } else {
                 var iframeSrc = embedResponse.document.selectFirst("iframe")?.attr("src") 
                 if (!iframeSrc.isNullOrEmpty()) {
-          
                     if (iframeSrc.startsWith("//")) iframeSrc = "https:$iframeSrc"
                     loadExtractor(iframeSrc, fullEmbedUrl, subtitleCallback, callback)
                 } else {
                     Log.d("adixtream", "Iframe tidak ditemukan dan tidak ada redirect.")
                 }
-  
             }
 
             return true
@@ -386,13 +370,11 @@ class IdlixProvider : MainAPI() {
                 val isHighNibble = (i % 2 == 0)
                 val nibble = if (isHighNibble) {
                     (bytes[byteIndex].toInt() ushr 4) and 0x0F
-   
                 } else {
                     bytes[byteIndex].toInt() and 0x0F
                 }
                 
                 if (nibble != 0) {
-           
                     isValid = false
                     break
                 }
@@ -446,7 +428,6 @@ data class HomepageItem(
             id = id,
             title = title ?: originalTitle,
             slug = slug,
-           
             posterPath = posterPath,
             contentType = contentType,
             quality = quality,
