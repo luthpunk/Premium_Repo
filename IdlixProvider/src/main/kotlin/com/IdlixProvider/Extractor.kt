@@ -18,10 +18,10 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            // 1. Ambil HTML dari iframe Jeniusplay
+            // 1. Ambil HTML dari Jeniusplay
             val htmlContent = app.get(url, referer = referer).text
             
-            // 2. Ekstrak Subtitle (sebelum membongkar JS agar lebih ringan)
+            // 2. Ekstrak Subtitle
             val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
             subtitleRegex.find(htmlContent)?.groupValues?.get(1)?.let { subStr ->
                 val tracks = subStr.split(",")
@@ -37,15 +37,14 @@ class Jeniusplay : ExtractorApi() {
 
             // 3. Bongkar Javascript Packer
             val unpackedText = getAndUnpack(htmlContent).replace("\\/", "/")
-            Log.d("adixtream", "Jeniusplay Unpacked length: ${unpackedText.length}")
-
-            // 4. Cari Link Video (Fokus mencari ekstensi video agar tidak tertukar dengan subtitle .jpg)
+            
+            // 4. Cari Link Video (Fokus ekstensi master.txt / .m3u8)
             val videoRegex = """(https?://[^"'\s]+(?:master\.txt|\.m3u8))""".toRegex()
             var videoUrl = videoRegex.find(unpackedText)?.groupValues?.get(1)
 
-            // 5. Fallback ke API do=getVideo jika metode Unpack gagal menemukan URL
+            // 5. Fallback ke API do=getVideo
             if (videoUrl.isNullOrEmpty()) {
-                Log.d("adixtream", "Unpack gagal, mencoba fallback ke API do=getVideo...")
+                Log.d("adixtream", "Unpack JS gagal, mencoba fallback ke API do=getVideo...")
                 val hashRegex = """([a-zA-Z0-9]{30,})""".toRegex()
                 var hash = url.substringAfter("data=", "").substringBefore("&")
                 
@@ -63,19 +62,19 @@ class Jeniusplay : ExtractorApi() {
                 
                 val rawVideoSource = apiResponse?.videoSource
                 if (!rawVideoSource.isNullOrEmpty()) {
-                    // Trik magic lamamu: ubah penyamaran txt ke m3u8
+                    // Bypass ekstensi woff/txt dari Cloudflare
                     videoUrl = rawVideoSource.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
                 }
             }
 
-            // 6. Lempar Link ke ExtractorLink Cloudstream
+            // 6. Lempar Link ke ExtractorLink
             if (!videoUrl.isNullOrEmpty()) {
                 Log.d("adixtream", "Jeniusplay berhasil menemukan video: $videoUrl")
                 
-                // Ekstraktor Utama (Membongkar resolusi di dalam file master/m3u8)
+                // Ekstraktor M3U8
                 generateM3u8(name, videoUrl, mainUrl).forEach(callback)
                 
-                // Ekstraktor Cadangan Direct
+                // Ekstraktor Direct
                 callback.invoke(
                     newExtractorLink(
                         source = name,
@@ -84,7 +83,6 @@ class Jeniusplay : ExtractorApi() {
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.quality = Qualities.Unknown.value
-                        // Pastikan referer mengarah ke iframe jeniusplay agar diizinkan
                         this.referer = url 
                     }
                 )
@@ -105,3 +103,8 @@ class Jeniusplay : ExtractorApi() {
         }
     }
 }
+
+// Data Class Fallback Jeniusplay
+data class ResponseSource(
+    @JsonProperty("videoSource") val videoSource: String = ""
+)
