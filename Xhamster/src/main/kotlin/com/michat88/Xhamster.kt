@@ -1,8 +1,21 @@
 package com.michat88
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import org.jsoup.Jsoup
+
+data class XhVideo(
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("pageURL") val pageURL: String? = null,
+    @JsonProperty("thumbURL") val thumbURL: String? = null
+)
+
+data class XhSuggest(
+    @JsonProperty("plainText") val plainText: String? = null,
+    @JsonProperty("link") val link: String? = null
+)
 
 class Xhamster : MainAPI() {
     override var mainUrl = "https://xhamster.com"
@@ -17,24 +30,27 @@ class Xhamster : MainAPI() {
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
     )
 
+    // MENAMBAHKAN KATEGORI DI SINI
+    // Format: "URL Target" to "Nama Tab di Aplikasi"
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Trending"
+        "$mainUrl/" to "Trending",
+        "$mainUrl/categories/indonesian" to "Indo",
+        "$mainUrl/categories/uncensored" to "Uncensored",
+        "$mainUrl/categories/russian" to "Russian",
+        "$mainUrl/categories/chinese" to "Chinese",
+        "$mainUrl/tags/japanese-mom-uncensored" to "Japanese Mom"
     )
 
-    // FUNGSI HELPER SAKTI: Ekstrak video anti Lazy-Load
     private fun extractVideos(html: String): List<SearchResponse> {
         val items = mutableListOf<SearchResponse>()
         val addedUrls = mutableSetOf<String>()
 
         val document = Jsoup.parse(html)
-        // Kita ambil data mentah dari script penyimpan rahasia xHamster
         val scriptData = document.selectFirst("script#initials-script")?.data() ?: html
 
-        // Tangkap langsung dari JSON backend (100% aman dari Lazy Load)
         val regex = """"title":"(.*?)","thumbId"[^\{]*?"pageURL":"([^"]+)","thumbURL":"([^"]+)"""".toRegex()
         
         regex.findAll(scriptData).forEach { match ->
-            // Membersihkan garis miring (slash) dan kutip bawaan JSON
             val title = match.groupValues[1].replace("\\\"", "\"").replace("\\/", "/")
             val url = match.groupValues[2].replace("\\/", "/")
             val posterUrl = match.groupValues[3].replace("\\/", "/")
@@ -50,7 +66,6 @@ class Xhamster : MainAPI() {
             }
         }
         
-        // Cadangan (Fallback) jika karena suatu alasan regex gagal
         if (items.isEmpty()) {
             document.select("a.video-thumb, a.thumb-image-container, a.mobile-thumb-player-container").forEach { element ->
                 val url = element.attr("href") ?: ""
@@ -78,7 +93,7 @@ class Xhamster : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Logika agar halaman 2, 3, dst bisa dimuat (Paginasi)
+        // Logika paginasi ini sudah mendukung struktur /kategori/nama-kategori/2 untuk xHamster
         val pageUrl = if (page == 1) request.data else "${request.data.removeSuffix("/")}/$page"
         val html = app.get(pageUrl, headers = headers).text
         val items = extractVideos(html)
@@ -91,7 +106,6 @@ class Xhamster : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
-        // API standar pencarian
         val html = app.get("$mainUrl/search/$query?page=$page", headers = headers).text
         val searchItems = extractVideos(html)
         
@@ -102,7 +116,6 @@ class Xhamster : MainAPI() {
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? {
-        // Memakai sistem pencarian normal di halaman pertama agar video bisa langsung diklik
         val html = app.get("$mainUrl/search/$query?page=1", headers = headers).text
         return extractVideos(html)
     }
@@ -116,7 +129,6 @@ class Xhamster : MainAPI() {
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")
         val tags = document.select("a[href^=https://xhamster.com/categories/] span").map { it.text() }
 
-        // Ambil saran video dari fungsi extractVideos lalu filter video yang sedang diputar
         val recommendations = extractVideos(html).filter { it.url != url }
 
         return newMovieLoadResponse(
