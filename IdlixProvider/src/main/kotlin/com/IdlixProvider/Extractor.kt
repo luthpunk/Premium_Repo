@@ -18,19 +18,11 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            val hashRegex = """([a-zA-Z0-9]{30,})""".toRegex()
-            var hash = url.substringAfter("data=", "").substringBefore("&")
-            
-            if (hash.isBlank()) {
-                hash = hashRegex.find(url)?.groupValues?.get(1) ?: url.split("/").last()
-            }
-            
-            Log.d("adixtream", "Jeniusplay mengekstrak Hash: $hash")
-            
-            // Mengambil Subtitle
+            // 1. Ambil HTML dari iframe Jeniusplay
             val htmlContent = app.get(url, referer = referer).text
-            val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
             
+            // 2. Ekstrak Subtitle (sebelum membongkar JS agar lebih ringan)
+            val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
             subtitleRegex.find(htmlContent)?.groupValues?.get(1)?.let { subStr ->
                 val tracks = subStr.split(",")
                 for (track in tracks) {
@@ -43,41 +35,61 @@ class Jeniusplay : ExtractorApi() {
                 }
             }
 
-            // Tembak API Jeniusplay (Sistem Lama yang Stabil)
-            val apiUrl = "$mainUrl/player/index.php?data=$hash&do=getVideo"
-            val apiResponse = app.post(
-                url = apiUrl,
-                data = mapOf("hash" to hash, "r" to (referer ?: mainUrl)),
-                referer = url,
-                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-            ).parsedSafe<ResponseSource>()
+            // 3. Bongkar Javascript Packer
+            val unpackedText = getAndUnpack(htmlContent).replace("\\/", "/")
+            Log.d("adixtream", "Jeniusplay Unpacked length: ${unpackedText.length}")
 
-            val rawVideoSource = apiResponse?.videoSource
+            // 4. Cari Link Video (Fokus mencari ekstensi video agar tidak tertukar dengan subtitle .jpg)
+            val videoRegex = """(https?://[^"'\s]+(?:master\.txt|\.m3u8))""".toRegex()
+            var videoUrl = videoRegex.find(unpackedText)?.groupValues?.get(1)
 
-            if (!rawVideoSource.isNullOrEmpty()) {
-                // --- KEMBALI MENGGUNAKAN TRIK MAGIC LAMA MILIKMU ---
-                // Trik ini sangat penting untuk membypass error 400 Bad Request dari Cloudflare
-                val m3u8Url = rawVideoSource.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
-
-                Log.d("adixtream", "Jeniusplay memuat video: $m3u8Url")
-
-                // Ekstraktor Utama
-                generateM3u8(name, m3u8Url, mainUrl).forEach(callback)
+            // 5. Fallback ke API do=getVideo jika metode Unpack gagal menemukan URL
+            if (videoUrl.isNullOrEmpty()) {
+                Log.d("adixtream", "Unpack gagal, mencoba fallback ke API do=getVideo...")
+                val hashRegex = """([a-zA-Z0-9]{30,})""".toRegex()
+                var hash = url.substringAfter("data=", "").substringBefore("&")
                 
-                // Ekstraktor Cadangan menggunakan newExtractorLink yang benar
+                if (hash.isBlank()) {
+                    hash = hashRegex.find(url)?.groupValues?.get(1) ?: url.split("/").last()
+                }
+                
+                val apiUrl = "$mainUrl/player/index.php?data=$hash&do=getVideo"
+                val apiResponse = app.post(
+                    url = apiUrl,
+                    data = mapOf("hash" to hash, "r" to (referer ?: mainUrl)),
+                    referer = url,
+                    headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                ).parsedSafe<ResponseSource>()
+                
+                val rawVideoSource = apiResponse?.videoSource
+                if (!rawVideoSource.isNullOrEmpty()) {
+                    // Trik magic lamamu: ubah penyamaran txt ke m3u8
+                    videoUrl = rawVideoSource.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
+                }
+            }
+
+            // 6. Lempar Link ke ExtractorLink Cloudstream
+            if (!videoUrl.isNullOrEmpty()) {
+                Log.d("adixtream", "Jeniusplay berhasil menemukan video: $videoUrl")
+                
+                // Ekstraktor Utama (Membongkar resolusi di dalam file master/m3u8)
+                generateM3u8(name, videoUrl, mainUrl).forEach(callback)
+                
+                // Ekstraktor Cadangan Direct
                 callback.invoke(
                     newExtractorLink(
                         source = name,
                         name = "$name (Direct)",
-                        url = m3u8Url,
+                        url = videoUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.quality = Qualities.Unknown.value
-                        this.referer = referer ?: mainUrl
+                        // Pastikan referer mengarah ke iframe jeniusplay agar diizinkan
+                        this.referer = url 
                     }
                 )
             } else {
-                Log.d("adixtream", "Jeniusplay gagal mendapat videoSource. Respons API: $apiResponse")
+                Log.d("adixtream", "Jeniusplay gagal mendapat videoSource sama sekali.")
             }
         } catch (e: Exception) {
             Log.e("adixtream", "Jeniusplay Error: ${e.message}")
