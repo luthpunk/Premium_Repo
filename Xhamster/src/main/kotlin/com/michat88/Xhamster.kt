@@ -2,43 +2,33 @@ package com.michat88
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Document
 
-class XHamsterProvider : MainAPI() {
-    // 1. Konfigurasi Dasar Plugin
+class Xhamster : MainAPI() {
     override var mainUrl = "https://xhamster.com"
     override var name = "xHamster"
-    override val supportedTypes = setOf(TvType.NSFW) // Menandakan ini adalah konten dewasa
+    override val supportedTypes = setOf(TvType.NSFW) 
     override var lang = "en"
     override val hasMainPage = true
 
-    // 2. Mendefinisikan tab yang muncul di halaman beranda CloudStream
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Trending"
     )
 
-    // 3. Fungsi untuk mengambil dan memproses halaman utama
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Mengunduh HTML dari website
         val document = app.get(request.data).document
         val homeItems = mutableListOf<SearchResponse>()
 
-        // Mengambil semua elemen tag <a> yang membungkus thumbnail video
         document.select("a.mobile-thumb-player-container").forEach { element ->
-            // Mengambil judul dari atribut 'aria-label' dan link dari atribut 'href'
             val title = element.attr("aria-label")
             val url = element.attr("href")
-            
-            // Mencari gambar thumbnail (poster). 
             val imgElement = element.selectFirst("img.thumb-image-container__no-lazy-thumb, img.thumb-image-container__lazy-thumb")
             val posterUrl = imgElement?.attr("src")
 
-            // Jika judul dan url tersedia, kita masukkan ke dalam daftar hasil
             if (title.isNotBlank() && url.isNotBlank()) {
-                
-                // MENGGUNAKAN CARA BARU: Builder function yang rapi!
                 homeItems.add(
                     newMovieSearchResponse(
                         name = title,
@@ -51,16 +41,95 @@ class XHamsterProvider : MainAPI() {
             }
         }
 
-        // Mengembalikan daftar video ke CloudStream untuk ditampilkan
         return newHomePageResponse(
             name = request.name,
             list = homeItems
         )
     }
 
-    // Fungsi load() untuk memuat detail video (Akan kita kerjakan selanjutnya)
+    // 4. Memuat detail video ketika diklik dari beranda
     override suspend fun load(url: String): LoadResponse? {
-        // TODO: Kita butuh HTML dari halaman detail video untuk mengerjakan bagian ini
-        return super.load(url)
+        val document = app.get(url).document
+
+        // Mengambil data dari tag Meta Open Graph untuk hasil yang akurat
+        val title = document.selectFirst("meta[property=og:title]")?.attr("content") ?: return null
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val description = document.selectFirst("meta[property=og:description]")?.attr("content")
+
+        // Mengambil teks dari semua elemen <a> yang mengarah ke kategori
+        val tags = document.select("a[href^=https://xhamster.com/categories/] span").map { it.text() }
+
+        return newMovieLoadResponse(
+            name = title,
+            url = url,
+            type = TvType.NSFW,
+            dataUrl = url // url ini akan dilempar ke fungsi loadLinks
+        ) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
+        }
+    }
+
+    // 5. Mengambil link video dan subtitle untuk diputar
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        // Mengunduh ulang HTML dari halaman video
+        val document = app.get(data).document
+        val html = document.html()
+
+        // MENCARI LINK VIDEO
+        // Prioritas Utama: Mengambil link M3U8 Master Playlist dari tag preload
+        val m3u8Url = document.selectFirst("link[rel=preload][as=fetch][href*=.m3u8]")?.attr("href")
+        if (m3u8Url != null) {
+            callback.invoke(
+                ExtractorLink(
+                    source = name,
+                    name = "$name HLS",
+                    url = m3u8Url,
+                    referer = mainUrl,
+                    quality = Qualities.Unknown.value, // HLS akan otomatis menyesuaikan resolusi
+                    isM3u8 = true
+                )
+            )
+        } else {
+            // Rencana Cadangan: Mengambil link MP4 langsung jika M3U8 gagal dimuat
+            val mp4Url = document.selectFirst("video.video_container__no-script-video")?.attr("src")
+            if (mp4Url != null) {
+                callback.invoke(
+                    ExtractorLink(
+                        source = name,
+                        name = "$name Fallback",
+                        url = mp4Url,
+                        referer = mainUrl,
+                        quality = Qualities.P480.value,
+                        isM3u8 = false
+                    )
+                )
+            }
+        }
+
+        // MENCARI LINK SUBTITLE
+        // JSON format asli: "label":"English (auto-generated)","urls":{"vtt":"https:\/\/..."}
+        val subtitleRegex = """"label":"([^"]+)","urls":\{"vtt":"([^"]+)"""".toRegex()
+        
+        subtitleRegex.findAll(html).forEach { matchResult ->
+            val langLabel = matchResult.groupValues[1]
+            // Website memakai \/ untuk slash di JSON, jadi kita bersihkan dulu
+            val vttUrl = matchResult.groupValues[2].replace("\\/", "/")
+
+            subtitleCallback.invoke(
+                SubtitleFile(
+                    lang = langLabel,
+                    url = vttUrl
+                )
+            )
+        }
+
+        return true
     }
 }
