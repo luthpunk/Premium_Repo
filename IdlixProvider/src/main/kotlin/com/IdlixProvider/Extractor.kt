@@ -18,24 +18,19 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            // --- PERBAIKAN: EKSTRAKSI HASH YANG LEBIH PINTAR ---
-            // Cari string panjang yang merupakan kombinasi huruf dan angka (hex/base64)
             val hashRegex = """([a-zA-Z0-9]{30,})""".toRegex()
-            
-            // Coba ambil dari parameter data= dulu
             var hash = url.substringAfter("data=", "").substringBefore("&")
             
-            // Kalau kosong, cari pakai Regex di keseluruhan URL
             if (hash.isBlank()) {
                 hash = hashRegex.find(url)?.groupValues?.get(1) ?: url.split("/").last()
             }
             
             Log.d("adixtream", "Jeniusplay mengekstrak Hash: $hash")
             
-            // 2. Ambil HTML mentah untuk Subtitle
+            // Mengambil Subtitle
             val htmlContent = app.get(url, referer = referer).text
-            
             val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
+            
             subtitleRegex.find(htmlContent)?.groupValues?.get(1)?.let { subStr ->
                 val tracks = subStr.split(",")
                 for (track in tracks) {
@@ -48,7 +43,7 @@ class Jeniusplay : ExtractorApi() {
                 }
             }
 
-            // 3. Tembak API Jeniusplay
+            // Tembak API Jeniusplay
             val apiUrl = "$mainUrl/player/index.php?data=$hash&do=getVideo"
             val apiResponse = app.post(
                 url = apiUrl,
@@ -60,23 +55,22 @@ class Jeniusplay : ExtractorApi() {
             val rawVideoSource = apiResponse?.videoSource
 
             if (!rawVideoSource.isNullOrEmpty()) {
-                // Bongkar penyamaran .woff/.txt ke .m3u8
-                val m3u8Url = rawVideoSource.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
+                // PERBAIKAN: JANGAN replace .txt ke .m3u8 karena server memang menyediakannya dalam bentuk .txt
+                val videoUrl = rawVideoSource
 
                 // Ekstraktor Utama
-                generateM3u8(name, m3u8Url, mainUrl).forEach(callback)
+                generateM3u8(name, videoUrl, mainUrl).forEach(callback)
                 
-                // Ekstraktor Cadangan menggunakan newExtractorLink yang benar
+                // Ekstraktor Cadangan menggunakan gaya Constructor ExtractorLink yang aman
                 callback.invoke(
-                    newExtractorLink(
+                    ExtractorLink(
                         source = name,
                         name = "$name (Direct)",
-                        url = m3u8Url,
+                        url = videoUrl,
+                        referer = mainUrl, // Server Jeniusplay butuh referer asal mereka untuk segmen videonya
+                        quality = Qualities.Unknown.value,
                         type = ExtractorLinkType.M3U8
-                    ) {
-                        this.quality = Qualities.Unknown.value
-                        this.referer = referer ?: mainUrl
-                    }
+                    )
                 )
             } else {
                 Log.d("adixtream", "Jeniusplay gagal mendapat videoSource. Respons API: $apiResponse")
@@ -90,6 +84,7 @@ class Jeniusplay : ExtractorApi() {
     private fun getLanguage(str: String): String {
         return when {
             str.contains("indonesia", true) || str.contains("bahasa", true) -> "Indonesian"
+            str.contains("english", true) -> "English"
             else -> str
         }
     }
