@@ -33,7 +33,7 @@ import android.annotation.SuppressLint
 
 object Adicinemax21Extractor : Adicinemax21() {
 
-    // ================== IDLIX SOURCE (NEW UPDATED) ==================
+    // ================== IDLIX SOURCE (NEW UPDATED & BULLETPROOF) ==================
     suspend fun invokeIdlix(
         title: String? = null,
         year: Int? = null,
@@ -43,38 +43,51 @@ object Adicinemax21Extractor : Adicinemax21() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
+            // KUNCI UTAMA 1: Kita paksa pakai domain baru (z1), mengabaikan variabel lama (tv10)
+            val idlixApi = "https://z1.idlixku.com" 
+            
             val encodedQuery = URLEncoder.encode(title ?: return, "utf-8")
-            val searchRes = app.get("$idlixAPI/api/search?q=$encodedQuery").parsedSafe<IdlixSearchResponse>()
+            val searchResText = app.get("$idlixApi/api/search?q=$encodedQuery").text
+            val searchRes = tryParseJson<IdlixSearchResponse>(searchResText)
             val items = searchRes?.data ?: searchRes?.results ?: return
             
-            // 1. Cari film/series yang paling cocok berdasarkan judul
+            val isSeries = season != null
+
+            // 1. Cari film/series yang cocok (Filter nama dan tipe kontennya)
             val matchedItem = items.find { 
-                it.title.equals(title, true) || it.originalTitle.equals(title, true)
+                val titleMatch = it.title.equals(title, true) || it.originalTitle.equals(title, true)
+                val typeMatch = if (isSeries) it.contentType?.contains("series", true) == true else it.contentType?.contains("movie", true) == true
+                titleMatch && typeMatch
             } ?: items.firstOrNull() ?: return
 
             val slug = matchedItem.slug ?: return
-            val isSeries = season != null
 
             var contentType = "movie"
             var contentId = ""
 
             // 2. Ambil ID unik konten dari API
             if (!isSeries) {
-                val detailRes = app.get("$idlixAPI/api/movies/$slug").parsedSafe<IdlixDetailResponse>()
+                val detailResText = app.get("$idlixApi/api/movies/$slug").text
+                val detailRes = tryParseJson<IdlixDetailResponse>(detailResText)
                 contentId = detailRes?.id ?: slug
             } else {
                 contentType = "episode"
-                val seasonRes = app.get("$idlixAPI/api/series/$slug/season/$season").parsedSafe<IdlixSeasonApiResponse>()
+                val seasonResText = app.get("$idlixApi/api/series/$slug/season/$season").text
+                val seasonRes = tryParseJson<IdlixSeasonApiResponse>(seasonResText)
                 val ep = seasonRes?.season?.episodes?.find { it.episodeNumber == episode }
                 contentId = ep?.id ?: return
             }
 
+            // KUNCI UTAMA 2: Ubah payload menjadi RequestBody murni agar tidak gagal di Cloudstream
+            val challengeBody = mapOf("contentType" to contentType, "contentId" to contentId).toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+            
             // 3. Minta Tantangan (Challenge) Keamanan
-            val challengeRes = app.post(
-                url = "$idlixAPI/api/watch/challenge",
-                json = mapOf("contentType" to contentType, "contentId" to contentId),
-                headers = mapOf("Origin" to idlixAPI, "Accept" to "application/json, text/plain, */*")
-            ).parsedSafe<ChallengeResponse>()
+            val challengeResText = app.post(
+                url = "$idlixApi/api/watch/challenge",
+                requestBody = challengeBody,
+                headers = mapOf("Origin" to idlixApi, "Content-Type" to "application/json", "Accept" to "application/json, text/plain, */*", "Referer" to "$idlixApi/")
+            ).text
+            val challengeRes = tryParseJson<ChallengeResponse>(challengeResText)
 
             val challenge = challengeRes?.challenge ?: return
             val signature = challengeRes.signature ?: return
@@ -83,18 +96,21 @@ object Adicinemax21Extractor : Adicinemax21() {
             // 4. Tambang Nonce (Solve SHA-256 PoW)
             val nonce = mineNonce(challenge, difficulty) ?: return
 
+            val solveBody = mapOf("challenge" to challenge, "signature" to signature, "nonce" to nonce).toJson().toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+
             // 5. Kirim Jawaban dan Dapatkan Embed URL
-            val solveRes = app.post(
-                url = "$idlixAPI/api/watch/solve",
-                json = mapOf("challenge" to challenge, "signature" to signature, "nonce" to nonce),
-                headers = mapOf("Origin" to idlixAPI, "Accept" to "application/json, text/plain, */*")
-            ).parsedSafe<SolveResponse>()
+            val solveResText = app.post(
+                url = "$idlixApi/api/watch/solve",
+                requestBody = solveBody,
+                headers = mapOf("Origin" to idlixApi, "Content-Type" to "application/json", "Accept" to "application/json, text/plain, */*", "Referer" to "$idlixApi/")
+            ).text
+            val solveRes = tryParseJson<SolveResponse>(solveResText)
 
             val embedPath = solveRes?.embedUrl ?: return
-            val fullEmbedUrl = if (embedPath.startsWith("/")) "$idlixAPI$embedPath" else embedPath
+            val fullEmbedUrl = if (embedPath.startsWith("/")) "$idlixApi$embedPath" else embedPath
 
-            // 6. Ambil URL final, lalu kirim ke Jeniusplay atau Extractor Lain
-            val embedResponse = app.get(fullEmbedUrl, headers = mapOf("Referer" to "$idlixAPI/"))
+            // 6. Ambil URL final, lalu kirim ke Jeniusplay
+            val embedResponse = app.get(fullEmbedUrl, headers = mapOf("Referer" to "$idlixApi/"))
             val finalUrl = embedResponse.url
 
             if (finalUrl.contains("jeniusplay", true)) {
@@ -142,7 +158,7 @@ object Adicinemax21Extractor : Adicinemax21() {
 
     // --- DATA CLASSES TAMBAHAN KHUSUS IDLIX NEW API ---
     private data class IdlixSearchResponse(@JsonProperty("data") val data: List<IdlixContentData>? = null, @JsonProperty("results") val results: List<IdlixContentData>? = null)
-    private data class IdlixContentData(@JsonProperty("slug") val slug: String? = null, @JsonProperty("title") val title: String? = null, @JsonProperty("originalTitle") val originalTitle: String? = null)
+    private data class IdlixContentData(@JsonProperty("slug") val slug: String? = null, @JsonProperty("title") val title: String? = null, @JsonProperty("originalTitle") val originalTitle: String? = null, @JsonProperty("contentType") val contentType: String? = null)
     private data class IdlixDetailResponse(@JsonProperty("id") val id: String? = null)
     private data class IdlixSeasonApiResponse(@JsonProperty("season") val season: SeasonDetail? = null)
     private data class SeasonDetail(@JsonProperty("episodes") val episodes: List<EpisodeDetail>? = null)
