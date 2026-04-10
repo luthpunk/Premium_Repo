@@ -125,7 +125,9 @@ class IdlixProvider : MainAPI() {
         val isSeries = url.contains("/series/")
         val slug = url.split("/").last()
         
+        // --- PERBAIKAN API: URL untuk Movie menggunakan "movies" ---
         val apiUrl = "$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug"
+        
         val responseText = app.get(apiUrl).text
         val response = AppUtils.parseJson<IdlixDetailResponse>(responseText)
         
@@ -170,6 +172,7 @@ class IdlixProvider : MainAPI() {
                                 val still = ep.stillPath
                                 val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
                                 
+                                // FORMAT LAMA: episode|ID|url
                                 val loadData = "episode|$epId|$url"
                                 
                                 episodes.add(newEpisode(loadData) {
@@ -200,6 +203,7 @@ class IdlixProvider : MainAPI() {
             }
         } else {
             val movieId = response.id ?: slug
+            // FORMAT LAMA: movie|ID|url
             val loadData = "movie|$movieId|$url"
             
             return newMovieLoadResponse(title, url, TvType.Movie, loadData) {
@@ -277,17 +281,22 @@ class IdlixProvider : MainAPI() {
             val embedPath = solveRes?.embedUrl ?: return false
             val fullEmbedUrl = if (embedPath.startsWith("/")) "$mainUrl$embedPath" else embedPath
             
-            val embedHtml = app.get(fullEmbedUrl, headers = mapOf("Referer" to refererUrl)).document
+            // --- TAHAP EXTRACT URL JENIUSPLAY ---
+            val embedResponse = app.get(fullEmbedUrl, headers = mapOf("Referer" to refererUrl))
+            val finalUrl = embedResponse.url
             
-            var iframeSrc = embedHtml.selectFirst("iframe")?.attr("src") 
-            
-            if (!iframeSrc.isNullOrEmpty()) {
-                if (iframeSrc.startsWith("//")) iframeSrc = "https:$iframeSrc"
-                
-                // PERBAIKAN: Jeniusplay mengecek referer dari URL embednya
-                loadExtractor(iframeSrc, fullEmbedUrl, subtitleCallback, callback)
+            if (finalUrl.contains("jeniusplay.com")) {
+                Log.d("adixtream", "Redirected ke Jeniusplay: $finalUrl")
+                loadExtractor(finalUrl, fullEmbedUrl, subtitleCallback, callback)
             } else {
-                Log.d("adixtream", "Iframe tidak ditemukan. HTML: ${embedHtml.html()}")
+                // Fallback pencarian iframe
+                var iframeSrc = embedResponse.document.selectFirst("iframe")?.attr("src") 
+                if (!iframeSrc.isNullOrEmpty()) {
+                    if (iframeSrc.startsWith("//")) iframeSrc = "https:$iframeSrc"
+                    loadExtractor(iframeSrc, fullEmbedUrl, subtitleCallback, callback)
+                } else {
+                    Log.d("adixtream", "Iframe tidak ditemukan dan tidak ada redirect.")
+                }
             }
 
             return true
@@ -327,7 +336,7 @@ class IdlixProvider : MainAPI() {
 }
 
 // ============================================================================
-// DATA CLASSES (Diperbarui untuk Next.js API Idlix)
+// DATA CLASSES (Next.js API Idlix)
 // ============================================================================
 
 data class IdlixHomepageResponse(
@@ -345,7 +354,6 @@ data class HomepageItem(
     @JsonProperty("contentType") val contentType: String? = null,
     @JsonProperty("content") val content: ContentData? = null,
     
-    // Fallback jika datanya langsung berada di dalam root
     @JsonProperty("id") val id: String? = null,
     @JsonProperty("title") val title: String? = null,
     @JsonProperty("originalTitle") val originalTitle: String? = null,
