@@ -21,7 +21,7 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // --- DAFTAR MENU (Anti-Cache) ---
+    // --- DAFTAR MENU ---
     override val mainPage = mainPageOf(
         "$mainUrl/api/homepage" to "Beranda",
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=netflix" to "Netflix",
@@ -37,9 +37,29 @@ class IdlixProvider : MainAPI() {
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=thriller" to "Thriller"
     )
 
-    // Helper untuk merakit Judul + Season saja. (Rating dipisah pakai fitur Native Cloudstream)
-    private fun formatTitle(title: String, season: Int?): String {
-        return if (season != null && season > 0) "$title (S$season)" else title
+    // --- HELPER SAKTI: Merakit Judul + Label Kualitas + Season ---
+    private fun formatTitle(title: String, season: Int?, quality: String?, typeRaw: String?): String {
+        var finalTitle = title
+        
+        // 1. Tambahkan Season ke belakang
+        if (season != null && season > 0) {
+            finalTitle += " (S$season)"
+        }
+        
+        // 2. Tambahkan Label Kualitas & Tipe ke depan
+        val tags = mutableListOf<String>()
+        if (!typeRaw.isNullOrEmpty()) {
+            tags.add(if (typeRaw.contains("series", true) || typeRaw.contains("episode", true)) "TV" else "Movie")
+        }
+        if (!quality.isNullOrEmpty() && quality != "null") {
+            tags.add(quality)
+        }
+        
+        if (tags.isNotEmpty()) {
+            finalTitle = "[${tags.joinToString(" | ")}] $finalTitle"
+        }
+        
+        return finalTitle
     }
 
     // --- BERANDA & KATEGORI ---
@@ -49,7 +69,6 @@ class IdlixProvider : MainAPI() {
     ): HomePageResponse {
         val url = request.data
 
-        // 1. JIKA REQUEST ADALAH BERANDA
         if (url.contains("/api/homepage")) {
             if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
@@ -74,28 +93,28 @@ class IdlixProvider : MainAPI() {
                         
                         val typeRaw = item.contentType ?: content.contentType ?: ""
                         val isSeries = typeRaw.contains("series", true) || typeRaw.contains("episode", true)
+                        val qualityStr = content.quality ?: ""
                         
-                        val displayTitle = formatTitle(rawTitle, item.numberOfSeasons ?: content.numberOfSeasons)
+                        val displayTitle = formatTitle(rawTitle, item.numberOfSeasons ?: content.numberOfSeasons, qualityStr, typeRaw)
                         val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                         val posterPath = content.posterPath
                         val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
                                         else "https://image.tmdb.org/t/p/w342$posterPath"
 
-                        // Gunakan API Bawaan Bintang/Score dan Builder Spesifik
                         if (isSeries) {
                             homeItems.add(
                                 newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
                                     this.posterUrl = posterUrl
-                                    this.quality = getQualityFromString(content.quality ?: "")
-                                    this.score = Score.from10(content.voteAverage) // NATIVE RATING UI
+                                    this.quality = getQualityFromString(qualityStr)
+                                    this.score = Score.from10(content.voteAverage)
                                 }
                             )
                         } else {
                             homeItems.add(
                                 newMovieSearchResponse(displayTitle, href, TvType.Movie) {
                                     this.posterUrl = posterUrl
-                                    this.quality = getQualityFromString(content.quality ?: "")
-                                    this.score = Score.from10(content.voteAverage) // NATIVE RATING UI
+                                    this.quality = getQualityFromString(qualityStr)
+                                    this.score = Score.from10(content.voteAverage)
                                 }
                             )
                         }
@@ -106,8 +125,6 @@ class IdlixProvider : MainAPI() {
             }
             return newHomePageResponse(request.name, homeItems.distinctBy { it.url }, hasNext = false)
         } 
-        
-        // 2. JIKA REQUEST ADALAH KATEGORI (MOVIE, SERIES, GENRE, NETWORK)
         else {
             val apiUrl = url.replace("page=1", "page=$page")
             val responseText = app.get(apiUrl, headers = mapOf("Accept" to "application/json, text/plain, */*")).text
@@ -128,28 +145,28 @@ class IdlixProvider : MainAPI() {
                     
                     val typeRaw = item.contentType ?: ""
                     val isSeries = typeRaw.contains("series", true) || url.contains("series")
+                    val qualityStr = item.quality ?: ""
                     
-                    val displayTitle = formatTitle(rawTitle, item.numberOfSeasons)
+                    val displayTitle = formatTitle(rawTitle, item.numberOfSeasons, qualityStr, typeRaw)
                     val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                     val posterPath = item.posterPath
                     val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
                                     else "https://image.tmdb.org/t/p/w342$posterPath"
 
-                    // Gunakan API Bawaan Bintang/Score dan Builder Spesifik
                     if (isSeries) {
                         categoryItems.add(
                             newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
                                 this.posterUrl = posterUrl
-                                this.quality = getQualityFromString(item.quality ?: "")
-                                this.score = Score.from10(item.voteAverage) // NATIVE RATING UI
+                                this.quality = getQualityFromString(qualityStr)
+                                this.score = Score.from10(item.voteAverage)
                             }
                         )
                     } else {
                         categoryItems.add(
                             newMovieSearchResponse(displayTitle, href, TvType.Movie) {
                                 this.posterUrl = posterUrl
-                                this.quality = getQualityFromString(item.quality ?: "")
-                                this.score = Score.from10(item.voteAverage) // NATIVE RATING UI
+                                this.quality = getQualityFromString(qualityStr)
+                                this.score = Score.from10(item.voteAverage)
                             }
                         )
                     }
@@ -179,8 +196,9 @@ class IdlixProvider : MainAPI() {
                 
                 val typeRaw = item.contentType ?: ""
                 val isSeries = typeRaw.contains("series", true)
+                val qualityStr = item.quality ?: ""
             
-                val displayTitle = formatTitle(rawTitle, item.numberOfSeasons)
+                val displayTitle = formatTitle(rawTitle, item.numberOfSeasons, qualityStr, typeRaw)
                 val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                 val posterPath = item.posterPath
                 val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
@@ -190,16 +208,16 @@ class IdlixProvider : MainAPI() {
                     searchItems.add(
                         newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
                             this.posterUrl = posterUrl
-                            this.quality = getQualityFromString(item.quality ?: "")
-                            this.score = Score.from10(item.voteAverage) // NATIVE RATING UI
+                            this.quality = getQualityFromString(qualityStr)
+                            this.score = Score.from10(item.voteAverage)
                         }
                     )
                 } else {
                     searchItems.add(
                         newMovieSearchResponse(displayTitle, href, TvType.Movie) {
                             this.posterUrl = posterUrl
-                            this.quality = getQualityFromString(item.quality ?: "")
-                            this.score = Score.from10(item.voteAverage) // NATIVE RATING UI
+                            this.quality = getQualityFromString(qualityStr)
+                            this.score = Score.from10(item.voteAverage)
                         }
                     )
                 }
