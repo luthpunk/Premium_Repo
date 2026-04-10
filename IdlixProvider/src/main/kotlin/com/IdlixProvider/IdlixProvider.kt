@@ -90,13 +90,14 @@ class IdlixProvider : MainAPI() {
         
         // 2. JIKA REQUEST ADALAH KATEGORI (MOVIE, SERIES, GENRE)
         else {
-            // Merakit URL API yang benar berdasarkan tebakan cemerlangmu
+            // Merakit URL API yang benar berdasarkan CURL yang kamu temukan
             val apiUrl = when {
                 url.endsWith("/movie") -> "$mainUrl/api/movies?page=$page&limit=36&sort=createdAt"
                 url.endsWith("/series") -> "$mainUrl/api/series?page=$page&limit=36&sort=createdAt"
                 url.contains("/genre/") -> {
                     val genre = url.substringAfterLast("/")
-                    "$mainUrl/api/movies?genres=$genre&page=$page&limit=36&sort=createdAt"
+                    // PERBAIKAN: Menggunakan /api/browse untuk genre
+                    "$mainUrl/api/browse?page=$page&limit=36&sort=latest&genre=$genre"
                 }
                 else -> url
             }
@@ -408,7 +409,6 @@ class IdlixProvider : MainAPI() {
 // DATA CLASSES (Next.js API Idlix)
 // ============================================================================
 
-// --- Tambahan Baru untuk Kategori / Pagination ---
 data class IdlixPaginatedResponse(
     @JsonProperty("data") val data: List<ContentData>? = null,
     @JsonProperty("pagination") val pagination: PaginationData? = null
@@ -418,7 +418,6 @@ data class PaginationData(
     @JsonProperty("page") val page: Int? = null,
     @JsonProperty("totalPages") val totalPages: Int? = null
 )
-// -------------------------------------------------
 
 data class IdlixHomepageResponse(
     @JsonProperty("above") val above: List<HomepageSection>? = null,
