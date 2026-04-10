@@ -1,21 +1,8 @@
 package com.michat88
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import org.jsoup.nodes.Document
-
-data class XhVideo(
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("pageURL") val pageURL: String? = null,
-    @JsonProperty("thumbURL") val thumbURL: String? = null
-)
-
-data class XhSuggest(
-    @JsonProperty("plainText") val plainText: String? = null,
-    @JsonProperty("link") val link: String? = null
-)
+import org.jsoup.Jsoup
 
 class Xhamster : MainAPI() {
     override var mainUrl = "https://xhamster.com"
@@ -34,43 +21,54 @@ class Xhamster : MainAPI() {
         "$mainUrl/" to "Trending"
     )
 
-    private fun extractVideos(document: Document): List<SearchResponse> {
+    // FUNGSI HELPER SAKTI: Ekstrak video anti Lazy-Load
+    private fun extractVideos(html: String): List<SearchResponse> {
         val items = mutableListOf<SearchResponse>()
-        document.select("a.video-thumb, a.thumb-image-container, a.mobile-thumb-player-container").forEach { element ->
-            val url = element.attr("href")
-            val img = element.selectFirst("img")
-            
-            // 1. MENGATASI LAZY-LOAD: Mencari link asli dari dalam tag <noscript>
-            var posterUrl = element.selectFirst("noscript")?.html()?.let {
-                Regex("""src="([^"]+)"""").find(it)?.groupValues?.get(1)
-            }
-            
-            // 2. Jika tidak ada di noscript, cari di atribut alternatif
-            if (posterUrl.isNullOrBlank()) {
-                posterUrl = img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                    ?: img?.attr("srcset")?.substringBefore(" ")?.takeIf { it.isNotBlank() }
-                    ?: img?.attr("src")
-                    ?: ""
-            }
+        val addedUrls = mutableSetOf<String>()
 
-            // Hindari gambar transparan (base64)
-            if (posterUrl != null && posterUrl.contains("data:image")) {
-                posterUrl = ""
-            }
+        val document = Jsoup.parse(html)
+        // Kita ambil data mentah dari script penyimpan rahasia xHamster
+        val scriptData = document.selectFirst("script#initials-script")?.data() ?: html
 
-            val title = element.attr("aria-label").ifBlank { img?.attr("alt") ?: "" }
+        // Tangkap langsung dari JSON backend (100% aman dari Lazy Load)
+        val regex = """"title":"(.*?)","thumbId"[^\{]*?"pageURL":"([^"]+)","thumbURL":"([^"]+)"""".toRegex()
+        
+        regex.findAll(scriptData).forEach { match ->
+            // Membersihkan garis miring (slash) dan kutip bawaan JSON
+            val title = match.groupValues[1].replace("\\\"", "\"").replace("\\/", "/")
+            val url = match.groupValues[2].replace("\\/", "/")
+            val posterUrl = match.groupValues[3].replace("\\/", "/")
 
-            if (title.isNotBlank() && url.isNotBlank() && url.contains("/videos/")) {
+            if (url.isNotBlank() && url.contains("/videos/") && !addedUrls.contains(url)) {
+                addedUrls.add(url)
                 items.add(
-                    newMovieSearchResponse(
-                        name = title,
-                        url = url,
-                        type = TvType.NSFW
-                    ) {
+                    newMovieSearchResponse(title, url, TvType.NSFW) {
                         this.posterUrl = posterUrl
                         this.posterHeaders = mapOf("referer" to mainUrl)
                     }
                 )
+            }
+        }
+        
+        // Cadangan (Fallback) jika karena suatu alasan regex gagal
+        if (items.isEmpty()) {
+            document.select("a.video-thumb, a.thumb-image-container, a.mobile-thumb-player-container").forEach { element ->
+                val url = element.attr("href") ?: ""
+                val img = element.selectFirst("img")
+                val title = element.attr("aria-label").ifBlank { img?.attr("alt") ?: "" }
+                
+                var posterUrl = img?.attr("data-src") ?: img?.attr("srcset")?.substringBefore(" ") ?: img?.attr("src") ?: ""
+                if (posterUrl.contains("data:image")) posterUrl = ""
+
+                if (title.isNotBlank() && url.isNotBlank() && url.contains("/videos/") && !addedUrls.contains(url)) {
+                    addedUrls.add(url)
+                    items.add(
+                        newMovieSearchResponse(title, url, TvType.NSFW) {
+                            this.posterUrl = posterUrl
+                            this.posterHeaders = mapOf("referer" to mainUrl)
+                        }
+                    )
+                }
             }
         }
         return items
@@ -80,26 +78,23 @@ class Xhamster : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // PERBAIKAN PAGINASI: Agar scroll ke bawah memunculkan halaman 2, 3, dst.
-        val pageUrl = if (page == 1) {
-            request.data
-        } else {
-            "${request.data.removeSuffix("/")}/$page"
-        }
-
-        val document = app.get(pageUrl, headers = headers).document
-        val items = extractVideos(document)
-
+        // Logika agar halaman 2, 3, dst bisa dimuat (Paginasi)
+        val pageUrl = if (page == 1) request.data else "${request.data.removeSuffix("/")}/$page"
+        val html = app.get(pageUrl, headers = headers).text
+        val items = extractVideos(html)
+        
         return newHomePageResponse(
             name = request.name,
             list = items,
-            hasNext = items.isNotEmpty() // Beri tahu aplikasi untuk terus lanjut selama masih ada video
+            hasNext = items.isNotEmpty() 
         )
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
-        val document = app.get("$mainUrl/search/$query?page=$page", headers = headers).document
-        val searchItems = extractVideos(document)
+        // API standar pencarian
+        val html = app.get("$mainUrl/search/$query?page=$page", headers = headers).text
+        val searchItems = extractVideos(html)
+        
         return newSearchResponseList(
             list = searchItems,
             hasNext = searchItems.isNotEmpty() 
@@ -107,58 +102,22 @@ class Xhamster : MainAPI() {
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? {
-        val url = "$mainUrl/api/front/search/suggest?searchValue=$query&searchScope=video&orientation=straight"
-        val response = app.get(url, headers = headers).text
-        
-        val suggestions = tryParseJson<Array<XhSuggest>>(response) ?: return emptyList()
-
-        return suggestions.mapNotNull { suggest ->
-            val title = suggest.plainText ?: return@mapNotNull null
-            val link = suggest.link ?: return@mapNotNull null
-            
-            newMovieSearchResponse(
-                name = title,
-                url = link,
-                type = TvType.NSFW
-            )
-        }
+        // Memakai sistem pencarian normal di halaman pertama agar video bisa langsung diklik
+        val html = app.get("$mainUrl/search/$query?page=1", headers = headers).text
+        return extractVideos(html)
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = headers).document
-        val html = document.html()
+        val html = app.get(url, headers = headers).text
+        val document = Jsoup.parse(html)
 
         val title = document.selectFirst("meta[property=og:title]")?.attr("content") ?: return null
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")
         val tags = document.select("a[href^=https://xhamster.com/categories/] span").map { it.text() }
 
-        val recommendations = mutableListOf<SearchResponse>()
-        val videoPropsRaw = html.substringAfter("\"videoThumbProps\":[", "")
-        if (videoPropsRaw.isNotBlank()) {
-            val cleanJson = "[" + videoPropsRaw.substringBefore("],\"dropdownType\"") + "]"
-            
-            val videoList = tryParseJson<Array<XhVideo>>(cleanJson)
-            
-            videoList?.forEach { video: XhVideo ->
-                val vTitle = video.title
-                val vUrl = video.pageURL
-                val vThumb = video.thumbURL
-                
-                if (!vTitle.isNullOrBlank() && !vUrl.isNullOrBlank()) {
-                    recommendations.add(
-                        newMovieSearchResponse(
-                            name = vTitle,
-                            url = vUrl,
-                            type = TvType.NSFW
-                        ) {
-                            this.posterUrl = vThumb
-                            this.posterHeaders = mapOf("referer" to mainUrl)
-                        }
-                    )
-                }
-            }
-        }
+        // Ambil saran video dari fungsi extractVideos lalu filter video yang sedang diputar
+        val recommendations = extractVideos(html).filter { it.url != url }
 
         return newMovieLoadResponse(
             name = title,
@@ -180,8 +139,8 @@ class Xhamster : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, headers = headers).document
-        val html = document.html()
+        val html = app.get(data, headers = headers).text
+        val document = Jsoup.parse(html)
 
         val m3u8Url = document.selectFirst("link[rel=preload][as=fetch][href*=.m3u8]")?.attr("href")
         if (m3u8Url != null) {
