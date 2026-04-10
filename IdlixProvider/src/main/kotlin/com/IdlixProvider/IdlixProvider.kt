@@ -37,29 +37,9 @@ class IdlixProvider : MainAPI() {
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=thriller" to "Thriller"
     )
 
-    // --- HELPER SAKTI: Merakit Judul + Label Kualitas + Season ---
-    private fun formatTitle(title: String, season: Int?, quality: String?, typeRaw: String?): String {
-        var finalTitle = title
-        
-        // 1. Tambahkan Season ke belakang
-        if (season != null && season > 0) {
-            finalTitle += " (S$season)"
-        }
-        
-        // 2. Tambahkan Label Kualitas & Tipe ke depan
-        val tags = mutableListOf<String>()
-        if (!typeRaw.isNullOrEmpty()) {
-            tags.add(if (typeRaw.contains("series", true) || typeRaw.contains("episode", true)) "TV" else "Movie")
-        }
-        if (!quality.isNullOrEmpty() && quality != "null") {
-            tags.add(quality)
-        }
-        
-        if (tags.isNotEmpty()) {
-            finalTitle = "[${tags.joinToString(" | ")}] $finalTitle"
-        }
-        
-        return finalTitle
+    // Helper untuk merakit Judul + Season saja yang rapi
+    private fun formatTitle(title: String, season: Int?): String {
+        return if (season != null && season > 0) "$title (S$season)" else title
     }
 
     // --- BERANDA & KATEGORI ---
@@ -93,9 +73,8 @@ class IdlixProvider : MainAPI() {
                         
                         val typeRaw = item.contentType ?: content.contentType ?: ""
                         val isSeries = typeRaw.contains("series", true) || typeRaw.contains("episode", true)
-                        val qualityStr = content.quality ?: ""
                         
-                        val displayTitle = formatTitle(rawTitle, item.numberOfSeasons ?: content.numberOfSeasons, qualityStr, typeRaw)
+                        val displayTitle = formatTitle(rawTitle, item.numberOfSeasons ?: content.numberOfSeasons)
                         val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                         val posterPath = content.posterPath
                         val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
@@ -105,7 +84,7 @@ class IdlixProvider : MainAPI() {
                             homeItems.add(
                                 newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
                                     this.posterUrl = posterUrl
-                                    this.quality = getQualityFromString(qualityStr)
+                                    this.quality = getQualityFromString(content.quality ?: "")
                                     this.score = Score.from10(content.voteAverage)
                                 }
                             )
@@ -113,7 +92,7 @@ class IdlixProvider : MainAPI() {
                             homeItems.add(
                                 newMovieSearchResponse(displayTitle, href, TvType.Movie) {
                                     this.posterUrl = posterUrl
-                                    this.quality = getQualityFromString(qualityStr)
+                                    this.quality = getQualityFromString(content.quality ?: "")
                                     this.score = Score.from10(content.voteAverage)
                                 }
                             )
@@ -145,9 +124,8 @@ class IdlixProvider : MainAPI() {
                     
                     val typeRaw = item.contentType ?: ""
                     val isSeries = typeRaw.contains("series", true) || url.contains("series")
-                    val qualityStr = item.quality ?: ""
                     
-                    val displayTitle = formatTitle(rawTitle, item.numberOfSeasons, qualityStr, typeRaw)
+                    val displayTitle = formatTitle(rawTitle, item.numberOfSeasons)
                     val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                     val posterPath = item.posterPath
                     val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
@@ -157,7 +135,7 @@ class IdlixProvider : MainAPI() {
                         categoryItems.add(
                             newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
                                 this.posterUrl = posterUrl
-                                this.quality = getQualityFromString(qualityStr)
+                                this.quality = getQualityFromString(item.quality ?: "")
                                 this.score = Score.from10(item.voteAverage)
                             }
                         )
@@ -165,7 +143,7 @@ class IdlixProvider : MainAPI() {
                         categoryItems.add(
                             newMovieSearchResponse(displayTitle, href, TvType.Movie) {
                                 this.posterUrl = posterUrl
-                                this.quality = getQualityFromString(qualityStr)
+                                this.quality = getQualityFromString(item.quality ?: "")
                                 this.score = Score.from10(item.voteAverage)
                             }
                         )
@@ -196,9 +174,8 @@ class IdlixProvider : MainAPI() {
                 
                 val typeRaw = item.contentType ?: ""
                 val isSeries = typeRaw.contains("series", true)
-                val qualityStr = item.quality ?: ""
             
-                val displayTitle = formatTitle(rawTitle, item.numberOfSeasons, qualityStr, typeRaw)
+                val displayTitle = formatTitle(rawTitle, item.numberOfSeasons)
                 val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                 val posterPath = item.posterPath
                 val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
@@ -208,7 +185,7 @@ class IdlixProvider : MainAPI() {
                     searchItems.add(
                         newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
                             this.posterUrl = posterUrl
-                            this.quality = getQualityFromString(qualityStr)
+                            this.quality = getQualityFromString(item.quality ?: "")
                             this.score = Score.from10(item.voteAverage)
                         }
                     )
@@ -216,7 +193,7 @@ class IdlixProvider : MainAPI() {
                     searchItems.add(
                         newMovieSearchResponse(displayTitle, href, TvType.Movie) {
                             this.posterUrl = posterUrl
-                            this.quality = getQualityFromString(qualityStr)
+                            this.quality = getQualityFromString(item.quality ?: "")
                             this.score = Score.from10(item.voteAverage)
                         }
                     )
