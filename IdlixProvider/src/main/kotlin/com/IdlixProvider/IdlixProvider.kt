@@ -30,7 +30,6 @@ class IdlixProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Idlix menggunakan API tunggal untuk homepage, jadi hanya diload di page 1
         if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
         val url = request.data
@@ -47,7 +46,6 @@ class IdlixProvider : MainAPI() {
             for (section in allSections) {
                 val sectionData = section.data ?: continue
                 
-                // Lewati bagian "latest_episodes" agar beranda tidak dipenuhi episode lepas
                 if (section.type == "latest_episodes") continue 
 
                 for (item in sectionData) {
@@ -64,13 +62,11 @@ class IdlixProvider : MainAPI() {
                     val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
                                     else "https://image.tmdb.org/t/p/w342$posterPath"
 
+                    // Penulisan dikembalikan seperti gaya lama tanpa error 'rating'
                     homeItems.add(
                         newMovieSearchResponse(title, href, type) {
                             this.posterUrl = posterUrl
                             this.quality = getQualityFromString(content.quality ?: "")
-                            content.voteAverage?.let {
-                                this.rating = it.toFloatOrNull()?.times(10)?.toInt()
-                            }
                         }
                     )
                 }
@@ -80,7 +76,6 @@ class IdlixProvider : MainAPI() {
             e.printStackTrace()
         }
 
-        // Tampilkan hasil yang unik (tidak ada duplikat)
         return newHomePageResponse(request.name, homeItems.distinctBy { it.url }, hasNext = false)
     }
 
@@ -155,7 +150,6 @@ class IdlixProvider : MainAPI() {
             
             val totalSeasons = response.numberOfSeasons ?: 1 
             
-            // Loop untuk mendapatkan daftar episode dari setiap season
             for (seasonNum in 1..totalSeasons) {
                 val seasonApiUrl = "$mainUrl/api/series/$slug/season/$seasonNum"
                 try {
@@ -173,7 +167,7 @@ class IdlixProvider : MainAPI() {
                                 val still = ep.stillPath
                                 val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
                                 
-                                // Format Data: Type | UUID | Referer URL
+                                // DIKEMBALIKAN KE GAYA LAMA: episode|ID|url
                                 val loadData = "episode|$epId|$url"
                                 
                                 episodes.add(newEpisode(loadData) {
@@ -204,7 +198,7 @@ class IdlixProvider : MainAPI() {
             }
         } else {
             val movieId = response.id ?: slug
-            // Format Data: Type | UUID | Referer URL
+            // DIKEMBALIKAN KE GAYA LAMA: movie|ID|url
             val loadData = "movie|$movieId|$url"
             
             return newMovieLoadResponse(title, url, TvType.Movie, loadData) {
@@ -221,6 +215,7 @@ class IdlixProvider : MainAPI() {
     }
 
     // --- MENDAPATKAN LINK VIDEO ---
+    // (Dibiarkan persis seperti aslimu agar tidak error)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
