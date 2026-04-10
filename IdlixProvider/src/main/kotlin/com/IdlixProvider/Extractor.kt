@@ -18,9 +18,11 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
+            // Cari string panjang yang merupakan kombinasi huruf dan angka (hex/base64)
             val hashRegex = """([a-zA-Z0-9]{30,})""".toRegex()
             var hash = url.substringAfter("data=", "").substringBefore("&")
             
+            // Kalau kosong, cari pakai Regex di keseluruhan URL
             if (hash.isBlank()) {
                 hash = hashRegex.find(url)?.groupValues?.get(1) ?: url.split("/").last()
             }
@@ -55,22 +57,24 @@ class Jeniusplay : ExtractorApi() {
             val rawVideoSource = apiResponse?.videoSource
 
             if (!rawVideoSource.isNullOrEmpty()) {
-                // PERBAIKAN: JANGAN replace .txt ke .m3u8 karena server memang menyediakannya dalam bentuk .txt
+                // JANGAN di-replace .txt ke .m3u8 karena server memang menyediakannya dalam bentuk .txt
                 val videoUrl = rawVideoSource
 
                 // Ekstraktor Utama
                 generateM3u8(name, videoUrl, mainUrl).forEach(callback)
                 
-                // Ekstraktor Cadangan menggunakan gaya Constructor ExtractorLink yang aman
+                // Ekstraktor Cadangan menggunakan gaya PENULISAN LAMA yang kebal error
                 callback.invoke(
-                    ExtractorLink(
+                    newExtractorLink(
                         source = name,
                         name = "$name (Direct)",
                         url = videoUrl,
-                        referer = mainUrl, // Server Jeniusplay butuh referer asal mereka untuk segmen videonya
-                        quality = Qualities.Unknown.value,
                         type = ExtractorLinkType.M3U8
-                    )
+                    ) {
+                        this.quality = Qualities.Unknown.value
+                        // Pastikan referer mengarah ke mainUrl (jeniusplay) agar segmen video bisa dimuat
+                        this.referer = mainUrl 
+                    }
                 )
             } else {
                 Log.d("adixtream", "Jeniusplay gagal mendapat videoSource. Respons API: $apiResponse")
