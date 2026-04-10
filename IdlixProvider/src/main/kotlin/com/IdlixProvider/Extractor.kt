@@ -18,16 +18,14 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            val hashRegex = """([a-zA-Z0-9]{30,})""".toRegex()
-            var hash = url.substringAfter("data=", "").substringBefore("&")
-            if (hash.isBlank()) {
-                hash = hashRegex.find(url)?.groupValues?.get(1) ?: url.split("/").last()
-            }
-            
-            // Mengambil Subtitle
+            // 1. Ambil HTML mentah dari iframe Jeniusplay
             val htmlContent = app.get(url, referer = referer).text
-            val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
             
+            // Gunakan fungsi sakti getAndUnpack untuk membongkar JS yang dienkripsi
+            val unpackedText = getAndUnpack(htmlContent)
+            
+            // 2. Ekstrak Subtitle
+            val subtitleRegex = """var\s+playerjsSubtitle\s*=\s*["'](.*?)["']""".toRegex()
             subtitleRegex.find(htmlContent)?.groupValues?.get(1)?.let { subStr ->
                 val tracks = subStr.split(",")
                 for (track in tracks) {
@@ -40,25 +38,23 @@ class Jeniusplay : ExtractorApi() {
                 }
             }
 
-            // Tembak API Jeniusplay
-            val apiUrl = "$mainUrl/player/index.php?data=$hash&do=getVideo"
-            val apiResponseText = app.post(
-                url = apiUrl,
-                data = mapOf("hash" to hash, "r" to (referer ?: mainUrl)),
-                referer = url,
-                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-            ).text
-
-            // Gunakan Regex agar tahan banting jika JSON schema berubah
-            val rawVideoSource = Regex(""""videoSource"\s*:\s*"([^"]+)"""").find(apiResponseText)?.groupValues?.get(1)
+            // 3. Ekstrak URL Video (master.txt) dari kode JS yang sudah dibongkar
+            var rawVideoSource = """"file"\s*:\s*["']([^"']+)["']""".toRegex().find(unpackedText)?.groupValues?.get(1)
+            
+            if (rawVideoSource.isNullOrEmpty()) {
+                // Fallback pencarian manual jika regex pertama luput
+                rawVideoSource = """(https:\\?/\\?/[^"'\s]+master\.txt)""".toRegex().find(unpackedText)?.groupValues?.get(1)
+            }
 
             if (!rawVideoSource.isNullOrEmpty()) {
+                // Bersihkan karakter escape backslash (\/)
                 val videoUrl = rawVideoSource.replace("\\/", "/")
+                Log.d("adixtream", "Jeniusplay menemukan video: $videoUrl")
 
-                // Ekstraktor Utama M3U8
-                generateM3u8(name, videoUrl, mainUrl).forEach(callback)
+                // Ekstraktor Utama (Membongkar resolusi di dalam master.txt)
+                generateM3u8(name, videoUrl, url).forEach(callback)
                 
-                // Ekstraktor Cadangan Direct
+                // Ekstraktor Cadangan Direct (Langsung lempar master.txt)
                 callback.invoke(
                     newExtractorLink(
                         source = name,
@@ -67,11 +63,12 @@ class Jeniusplay : ExtractorApi() {
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.quality = Qualities.Unknown.value
-                        this.referer = "$mainUrl/" 
+                        // Gunakan url iframe sebagai referer agar diizinkan oleh server jeniusplay
+                        this.referer = url 
                     }
                 )
             } else {
-                Log.d("adixtream", "Jeniusplay gagal mendapat videoSource. Respons API: $apiResponseText")
+                Log.d("adixtream", "Jeniusplay gagal mendapat videoSource. Unpacked: $unpackedText")
             }
         } catch (e: Exception) {
             Log.e("adixtream", "Jeniusplay Error: ${e.message}")
