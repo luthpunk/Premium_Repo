@@ -39,11 +39,11 @@ class Jeniusplay : ExtractorApi() {
             // 3. Bongkar Javascript Packer
             val unpackedText = getAndUnpack(htmlContent).replace("\\/", "/")
             
-            // 4. Cari Link Video (Fokus ekstensi master.txt / .m3u8)
+            // 4. Cari Link Video
             val videoRegex = """(https?://[^"'\s]+(?:master\.txt|\.m3u8))""".toRegex()
             var videoUrl = videoRegex.find(unpackedText)?.groupValues?.get(1)
 
-            // 5. Fallback ke API do=getVideo
+            // 5. Fallback ke API do=getVideo jika JS gagal dibongkar
             if (videoUrl.isNullOrEmpty()) {
                 Log.d("adixtream", "Unpack JS gagal, mencoba fallback ke API do=getVideo...")
                 val hashRegex = """([a-zA-Z0-9]{30,})""".toRegex()
@@ -61,26 +61,25 @@ class Jeniusplay : ExtractorApi() {
                     headers = mapOf("X-Requested-With" to "XMLHttpRequest")
                 ).parsedSafe<ResponseSource>()
                 
-                val rawVideoSource = apiResponse?.videoSource
-                if (!rawVideoSource.isNullOrEmpty()) {
-                    // Bypass ekstensi woff/txt dari Cloudflare
-                    videoUrl = rawVideoSource.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
-                }
+                videoUrl = apiResponse?.videoSource
             }
 
             // 6. Lempar Link ke ExtractorLink
             if (!videoUrl.isNullOrEmpty()) {
-                Log.d("adixtream", "Jeniusplay berhasil menemukan video: $videoUrl")
+                // === INI DIA PERBAIKANNYA: PASTIKAN SEMUA LINK DIUBAH KE .M3U8 ===
+                val finalVideoUrl = videoUrl.replace(".woff", ".m3u8").replace(".txt", ".m3u8")
+                
+                Log.d("adixtream", "Jeniusplay berhasil menemukan video: $finalVideoUrl")
                 
                 // Ekstraktor M3U8
-                generateM3u8(name, videoUrl, mainUrl).forEach(callback)
+                generateM3u8(name, finalVideoUrl, mainUrl).forEach(callback)
                 
                 // Ekstraktor Direct
                 callback.invoke(
                     newExtractorLink(
                         source = name,
                         name = "$name (Direct)",
-                        url = videoUrl,
+                        url = finalVideoUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.quality = Qualities.Unknown.value
