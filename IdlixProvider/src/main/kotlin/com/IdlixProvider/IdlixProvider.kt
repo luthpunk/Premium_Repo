@@ -30,7 +30,6 @@ class IdlixProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Idlix menggunakan API tunggal untuk homepage, jadi hanya diload di page 1
         if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
         val url = request.data
@@ -47,7 +46,6 @@ class IdlixProvider : MainAPI() {
             for (section in allSections) {
                 val sectionData = section.data ?: continue
                 
-                // Lewati bagian "latest_episodes" agar beranda tidak dipenuhi episode lepas
                 if (section.type == "latest_episodes") continue 
 
                 for (item in sectionData) {
@@ -77,7 +75,6 @@ class IdlixProvider : MainAPI() {
             e.printStackTrace()
         }
 
-        // Tampilkan hasil yang unik (tidak ada duplikat)
         return newHomePageResponse(request.name, homeItems.distinctBy { it.url }, hasNext = false)
     }
 
@@ -125,7 +122,6 @@ class IdlixProvider : MainAPI() {
         val isSeries = url.contains("/series/")
         val slug = url.split("/").last()
         
-        // --- PERBAIKAN API: URL untuk Movie menggunakan "movies" ---
         val apiUrl = "$mainUrl/api/${if (isSeries) "series" else "movies"}/$slug"
         
         val responseText = app.get(apiUrl).text
@@ -154,7 +150,6 @@ class IdlixProvider : MainAPI() {
             
             val totalSeasons = response.numberOfSeasons ?: 1 
             
-            // Loop untuk mendapatkan daftar episode dari setiap season
             for (seasonNum in 1..totalSeasons) {
                 val seasonApiUrl = "$mainUrl/api/series/$slug/season/$seasonNum"
                 try {
@@ -172,7 +167,6 @@ class IdlixProvider : MainAPI() {
                                 val still = ep.stillPath
                                 val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
                                 
-                                // FORMAT LAMA: episode|ID|url
                                 val loadData = "episode|$epId|$url"
                                 
                                 episodes.add(newEpisode(loadData) {
@@ -203,7 +197,6 @@ class IdlixProvider : MainAPI() {
             }
         } else {
             val movieId = response.id ?: slug
-            // FORMAT LAMA: movie|ID|url
             val loadData = "movie|$movieId|$url"
             
             return newMovieLoadResponse(title, url, TvType.Movie, loadData) {
@@ -234,29 +227,13 @@ class IdlixProvider : MainAPI() {
             val contentType = rawContentType.substringAfterLast("/")
             val contentId = parts.getOrNull(1) ?: data 
             val refererUrl = parts.getOrNull(2) ?: "$mainUrl/"
-            
-            Log.d("adixtream", "Tipe: $contentType, ID: $contentId, Referer: $refererUrl")
 
-            // --- TAHAP BYPASS KEAMANAN ---
-            val clearanceText = app.post(
-                url = "$mainUrl/api/adblock/clearance",
-                headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
-            ).text.trim()
-            
-            val tokenClear = if (clearanceText.startsWith("{")) {
-                AppUtils.parseJson<ClearanceResponse>(clearanceText).token
-            } else {
-                clearanceText.replace("\"", "")
-            }
-            
-            if (tokenClear.isNullOrEmpty()) return false
-
+            // Tahap 1: Challenge
             val challengeRes = app.post(
                 url = "$mainUrl/api/watch/challenge",
                 json = mapOf(
                     "contentType" to contentType,
-                    "contentId" to contentId,
-                    "clearance" to tokenClear
+                    "contentId" to contentId
                 ),
                 headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
             ).parsedSafe<ChallengeResponse>()
@@ -265,6 +242,7 @@ class IdlixProvider : MainAPI() {
             val signature = challengeRes.signature ?: return false
             val difficulty = challengeRes.difficulty ?: 3
             
+            // Tahap 2: Solve Nonce (SHA-256 Bypass)
             val nonce = mineNonce(challenge, difficulty)
             if (nonce == null) return false
 
@@ -281,7 +259,7 @@ class IdlixProvider : MainAPI() {
             val embedPath = solveRes?.embedUrl ?: return false
             val fullEmbedUrl = if (embedPath.startsWith("/")) "$mainUrl$embedPath" else embedPath
             
-            // --- TAHAP EXTRACT URL JENIUSPLAY ---
+            // Tahap 3: Ambil iframe / Redirect Jeniusplay
             val embedResponse = app.get(fullEmbedUrl, headers = mapOf("Referer" to refererUrl))
             val finalUrl = embedResponse.url
             
@@ -289,7 +267,6 @@ class IdlixProvider : MainAPI() {
                 Log.d("adixtream", "Redirected ke Jeniusplay: $finalUrl")
                 loadExtractor(finalUrl, fullEmbedUrl, subtitleCallback, callback)
             } else {
-                // Fallback pencarian iframe
                 var iframeSrc = embedResponse.document.selectFirst("iframe")?.attr("src") 
                 if (!iframeSrc.isNullOrEmpty()) {
                     if (iframeSrc.startsWith("//")) iframeSrc = "https:$iframeSrc"
@@ -430,14 +407,6 @@ data class Genre(@JsonProperty("name") val name: String? = null)
 data class Cast(
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("profilePath") val profilePath: String? = null
-)
-
-data class ResponseSource(
-    @JsonProperty("videoSource") val videoSource: String = ""
-)
-
-data class ClearanceResponse(
-    @JsonProperty("token") val token: String? = null
 )
 
 data class ChallengeResponse(
