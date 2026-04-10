@@ -21,7 +21,7 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
-    // --- DAFTAR MENU (Anti-Cache / Langsung Pakai API) ---
+    // --- DAFTAR MENU (Anti-Cache) ---
     override val mainPage = mainPageOf(
         "$mainUrl/api/homepage" to "Beranda",
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=netflix" to "Netflix",
@@ -36,6 +36,11 @@ class IdlixProvider : MainAPI() {
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=mystery" to "Mystery",
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=thriller" to "Thriller"
     )
+
+    // Helper untuk merakit Judul + Season saja. (Rating dipisah pakai fitur Native Cloudstream)
+    private fun formatTitle(title: String, season: Int?): String {
+        return if (season != null && season > 0) "$title (S$season)" else title
+    }
 
     // --- BERANDA & KATEGORI ---
     override suspend fun getMainPage(
@@ -60,53 +65,52 @@ class IdlixProvider : MainAPI() {
 
                 for (section in allSections) {
                     val sectionData = section.data ?: continue
-                    
                     if (section.type == "latest_episodes") continue 
 
                     for (item in sectionData) {
                         val content = item.getActualContent()
-                        val title = content.title ?: continue
+                        val rawTitle = content.title ?: continue
                         val slug = content.slug ?: continue
                         
                         val typeRaw = item.contentType ?: content.contentType ?: ""
                         val isSeries = typeRaw.contains("series", true) || typeRaw.contains("episode", true)
-                        val type = if (isSeries) TvType.TvSeries else TvType.Movie
                         
+                        val displayTitle = formatTitle(rawTitle, item.numberOfSeasons ?: content.numberOfSeasons)
                         val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                         val posterPath = content.posterPath
-      
                         val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
                                         else "https://image.tmdb.org/t/p/w342$posterPath"
 
-                        homeItems.add(
-                            newMovieSearchResponse(title, href, type) {
-                                this.posterUrl = posterUrl
-                                this.quality = getQualityFromString(content.quality ?: "")
-                            }
-                        )
+                        // Gunakan API Bawaan Bintang/Score dan Builder Spesifik
+                        if (isSeries) {
+                            homeItems.add(
+                                newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
+                                    this.posterUrl = posterUrl
+                                    this.quality = getQualityFromString(content.quality ?: "")
+                                    this.score = Score.from10(content.voteAverage) // NATIVE RATING UI
+                                }
+                            )
+                        } else {
+                            homeItems.add(
+                                newMovieSearchResponse(displayTitle, href, TvType.Movie) {
+                                    this.posterUrl = posterUrl
+                                    this.quality = getQualityFromString(content.quality ?: "")
+                                    this.score = Score.from10(content.voteAverage) // NATIVE RATING UI
+                                }
+                            )
+                        }
                     }
                 }
             } catch (e: Exception) {
                 Log.e("adixtream", "Gagal parse halaman utama: ${e.message}")
-                e.printStackTrace()
             }
-
             return newHomePageResponse(request.name, homeItems.distinctBy { it.url }, hasNext = false)
         } 
         
         // 2. JIKA REQUEST ADALAH KATEGORI (MOVIE, SERIES, GENRE, NETWORK)
         else {
-            // Trik jitu: URL sudah berupa API, tinggal ubah parameter page=1 menjadi halaman saat ini
             val apiUrl = url.replace("page=1", "page=$page")
-
-            Log.d("adixtream", "Memuat Kategori API: $apiUrl")
-            
-            // Tambahkan Header Accept JSON untuk memastikan server merespons dengan benar
-            val responseText = app.get(
-                url = apiUrl,
-                headers = mapOf("Accept" to "application/json, text/plain, */*")
-            ).text
-            
+            val responseText = app.get(apiUrl, headers = mapOf("Accept" to "application/json, text/plain, */*")).text
             val categoryItems = mutableListOf<SearchResponse>()
             var hasNextPage = false
 
@@ -114,35 +118,45 @@ class IdlixProvider : MainAPI() {
                 val parsed = AppUtils.parseJson<IdlixPaginatedResponse>(responseText)
                 val items = parsed.data ?: emptyList()
                 
-                // Cek pagination untuk fitur Infinite Scroll
                 val currentPage = parsed.pagination?.page ?: page
                 val totalPages = parsed.pagination?.totalPages ?: 1
                 hasNextPage = currentPage < totalPages
 
                 for (item in items) {
-                    val title = item.title ?: item.originalTitle ?: continue
+                    val rawTitle = item.title ?: item.originalTitle ?: continue
                     val slug = item.slug ?: continue
                     
                     val typeRaw = item.contentType ?: ""
                     val isSeries = typeRaw.contains("series", true) || url.contains("series")
-                    val type = if (isSeries) TvType.TvSeries else TvType.Movie
                     
+                    val displayTitle = formatTitle(rawTitle, item.numberOfSeasons)
                     val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                     val posterPath = item.posterPath
                     val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
                                     else "https://image.tmdb.org/t/p/w342$posterPath"
 
-                    categoryItems.add(
-                        newMovieSearchResponse(title, href, type) {
-                            this.posterUrl = posterUrl
-                            this.quality = getQualityFromString(item.quality ?: "")
-                        }
-                    )
+                    // Gunakan API Bawaan Bintang/Score dan Builder Spesifik
+                    if (isSeries) {
+                        categoryItems.add(
+                            newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
+                                this.posterUrl = posterUrl
+                                this.quality = getQualityFromString(item.quality ?: "")
+                                this.score = Score.from10(item.voteAverage) // NATIVE RATING UI
+                            }
+                        )
+                    } else {
+                        categoryItems.add(
+                            newMovieSearchResponse(displayTitle, href, TvType.Movie) {
+                                this.posterUrl = posterUrl
+                                this.quality = getQualityFromString(item.quality ?: "")
+                                this.score = Score.from10(item.voteAverage) // NATIVE RATING UI
+                            }
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("adixtream", "Gagal parse kategori API: ${e.message}")
             }
-
             return newHomePageResponse(request.name, categoryItems.distinctBy { it.url }, hasNext = hasNextPage)
         }
     }
@@ -160,29 +174,39 @@ class IdlixProvider : MainAPI() {
             val items = parsed.data ?: parsed.results ?: emptyList()
             
             for (item in items) {
-                val title = item.title ?: item.originalTitle ?: continue
+                val rawTitle = item.title ?: item.originalTitle ?: continue
                 val slug = item.slug ?: continue
                 
                 val typeRaw = item.contentType ?: ""
                 val isSeries = typeRaw.contains("series", true)
-                val type = if (isSeries) TvType.TvSeries else TvType.Movie
             
+                val displayTitle = formatTitle(rawTitle, item.numberOfSeasons)
                 val href = "$mainUrl/${if (isSeries) "series" else "movie"}/$slug"
                 val posterPath = item.posterPath
                 val posterUrl = if (posterPath.isNullOrEmpty() || posterPath == "null") "" 
                                 else "https://image.tmdb.org/t/p/w342$posterPath"
 
-                searchItems.add(
-                    newMovieSearchResponse(title, href, type) {
-                        this.posterUrl = posterUrl
-                        this.quality = getQualityFromString(item.quality ?: "")
-                    }
-                )
+                if (isSeries) {
+                    searchItems.add(
+                        newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
+                            this.posterUrl = posterUrl
+                            this.quality = getQualityFromString(item.quality ?: "")
+                            this.score = Score.from10(item.voteAverage) // NATIVE RATING UI
+                        }
+                    )
+                } else {
+                    searchItems.add(
+                        newMovieSearchResponse(displayTitle, href, TvType.Movie) {
+                            this.posterUrl = posterUrl
+                            this.quality = getQualityFromString(item.quality ?: "")
+                            this.score = Score.from10(item.voteAverage) // NATIVE RATING UI
+                        }
+                    )
+                }
             }
         } catch (e: Exception) {
             Log.e("adixtream", "Gagal parse search: ${e.message}")
         }
-
         return searchItems
     }
 
@@ -216,7 +240,6 @@ class IdlixProvider : MainAPI() {
         if (isSeries) {
             val episodes = arrayListOf<Episode>()
             val seasonNamesList = mutableListOf<SeasonData>()
-            
             val totalSeasons = response.numberOfSeasons ?: 1 
             
             for (seasonNum in 1..totalSeasons) {
@@ -224,18 +247,15 @@ class IdlixProvider : MainAPI() {
                 try {
                     val seasonResText = app.get(seasonApiUrl).text
                     val parsedSeason = AppUtils.parseJson<IdlixSeasonApiResponse>(seasonResText)
-                    
                     val epList = parsedSeason.season?.episodes
                     
                     if (!epList.isNullOrEmpty()) {
                         seasonNamesList.add(SeasonData(seasonNum, "Season $seasonNum"))
-                    
                         epList.forEach { ep ->
                             if (ep.hasVideo == true) {
                                 val epId = ep.id ?: return@forEach
                                 val still = ep.stillPath
                                 val epPoster = if (still.isNullOrEmpty() || still == "null") null else "https://image.tmdb.org/t/p/w500$still"
-                                
                                 val loadData = "episode|$epId|$url"
                             
                                 episodes.add(newEpisode(loadData) {
@@ -264,7 +284,6 @@ class IdlixProvider : MainAPI() {
                 if (actors != null) addActors(actors)
                 addTrailer(trailer)
             }
-      
         } else {
             val movieId = response.id ?: slug
             val loadData = "movie|$movieId|$url"
@@ -291,21 +310,16 @@ class IdlixProvider : MainAPI() {
     ): Boolean {
         try {
             Log.d("adixtream", "Mulai loadLinks dengan data: $data")
-            
             val parts = data.split("|")
             val rawContentType = parts.getOrNull(0) ?: "movie"
             val contentType = rawContentType.substringAfterLast("/")
             val contentId = parts.getOrNull(1) ?: data 
-  
             val refererUrl = parts.getOrNull(2) ?: "$mainUrl/"
 
             // Tahap 1: Challenge
             val challengeRes = app.post(
                 url = "$mainUrl/api/watch/challenge",
-                json = mapOf(
-                    "contentType" to contentType,
-                    "contentId" to contentId
-                ),
+                json = mapOf("contentType" to contentType, "contentId" to contentId),
                 headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
             ).parsedSafe<ChallengeResponse>()
 
@@ -319,16 +333,11 @@ class IdlixProvider : MainAPI() {
 
             val solveRes = app.post(
                 url = "$mainUrl/api/watch/solve",
-                json = mapOf(
-                    "challenge" to challenge,
-                    "signature" to signature,
-                    "nonce" to nonce
-                ),
+                json = mapOf("challenge" to challenge, "signature" to signature, "nonce" to nonce),
                 headers = mapOf("Referer" to refererUrl, "Origin" to mainUrl, "Accept" to "application/json, text/plain, */*")
             ).parsedSafe<SolveResponse>()
 
             val embedPath = solveRes?.embedUrl ?: return false
-            
             val fullEmbedUrl = if (embedPath.startsWith("/")) "$mainUrl$embedPath" else embedPath
             
             // Tahap 3: Ambil iframe / Redirect Jeniusplay
@@ -347,7 +356,6 @@ class IdlixProvider : MainAPI() {
                     Log.d("adixtream", "Iframe tidak ditemukan dan tidak ada redirect.")
                 }
             }
-
             return true
         } catch (e: Exception) {
             Log.e("adixtream", "Error di loadLinks: ${e.message}")
@@ -358,13 +366,10 @@ class IdlixProvider : MainAPI() {
 
     private fun mineNonce(challenge: String, difficulty: Int): Int? {
         val md = MessageDigest.getInstance("SHA-256")
-        
         for (nonce in 0..2000000) {
             val text = challenge + nonce
             val bytes = md.digest(text.toByteArray())
-            
             var isValid = true
-          
             for (i in 0 until difficulty) {
                 val byteIndex = i / 2
                 val isHighNibble = (i % 2 == 0)
@@ -373,7 +378,6 @@ class IdlixProvider : MainAPI() {
                 } else {
                     bytes[byteIndex].toInt() and 0x0F
                 }
-                
                 if (nibble != 0) {
                     isValid = false
                     break
@@ -413,15 +417,14 @@ data class HomepageSection(
 data class HomepageItem(
     @JsonProperty("contentType") val contentType: String? = null,
     @JsonProperty("content") val content: ContentData? = null,
-    
     @JsonProperty("id") val id: String? = null,
     @JsonProperty("title") val title: String? = null,
     @JsonProperty("originalTitle") val originalTitle: String? = null,
     @JsonProperty("slug") val slug: String? = null,
- 
     @JsonProperty("posterPath") val posterPath: String? = null,
     @JsonProperty("quality") val quality: String? = null,
-    @JsonProperty("voteAverage") val voteAverage: String? = null
+    @JsonProperty("voteAverage") val voteAverage: String? = null,
+    @JsonProperty("numberOfSeasons") val numberOfSeasons: Int? = null
 ) {
     fun getActualContent(): ContentData {
         return content ?: ContentData(
@@ -431,7 +434,8 @@ data class HomepageItem(
             posterPath = posterPath,
             contentType = contentType,
             quality = quality,
-            voteAverage = voteAverage
+            voteAverage = voteAverage,
+            numberOfSeasons = numberOfSeasons
         )
     }
 }
@@ -444,7 +448,8 @@ data class ContentData(
     @JsonProperty("posterPath") val posterPath: String? = null,
     @JsonProperty("contentType") val contentType: String? = null,
     @JsonProperty("quality") val quality: String? = null,
-    @JsonProperty("voteAverage") val voteAverage: String? = null
+    @JsonProperty("voteAverage") val voteAverage: String? = null,
+    @JsonProperty("numberOfSeasons") val numberOfSeasons: Int? = null
 )
 
 data class IdlixSearchResponse(
