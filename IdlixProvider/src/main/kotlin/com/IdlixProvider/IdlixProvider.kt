@@ -21,14 +21,15 @@ class IdlixProvider : MainAPI() {
         TvType.AsianDrama
     )
 
+    // Merombak kunci menjadi URL API Asli agar Cache lama tertimpa (Bypass Cache)
     override val mainPage = mainPageOf(
         "$mainUrl/api/homepage" to "Beranda",
-        "$mainUrl/movie" to "Movie",
-        "$mainUrl/series" to "Series",
-        "$mainUrl/genre/horror" to "Horror",
-        "$mainUrl/genre/drama" to "Drama",
-        "$mainUrl/genre/mystery" to "Mystery",
-        "$mainUrl/genre/thriller" to "Thriller"
+        "$mainUrl/api/movies?page=1&limit=36&sort=createdAt" to "Movie",
+        "$mainUrl/api/series?page=1&limit=36&sort=createdAt" to "Series",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=horror" to "Horror",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=drama" to "Drama",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=mystery" to "Mystery",
+        "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=thriller" to "Thriller"
     )
 
     // --- BERANDA & KATEGORI ---
@@ -90,20 +91,17 @@ class IdlixProvider : MainAPI() {
         
         // 2. JIKA REQUEST ADALAH KATEGORI (MOVIE, SERIES, GENRE)
         else {
-            // Merakit URL API yang benar berdasarkan CURL yang kamu temukan
-            val apiUrl = when {
-                url.endsWith("/movie") -> "$mainUrl/api/movies?page=$page&limit=36&sort=createdAt"
-                url.endsWith("/series") -> "$mainUrl/api/series?page=$page&limit=36&sort=createdAt"
-                url.contains("/genre/") -> {
-                    val genre = url.substringAfterLast("/")
-                    // PERBAIKAN: Menggunakan /api/browse untuk genre
-                    "$mainUrl/api/browse?page=$page&limit=36&sort=latest&genre=$genre"
-                }
-                else -> url
-            }
+            // Trik jitu: URL sudah berupa API, tinggal ubah parameter page=1 menjadi halaman saat ini
+            val apiUrl = url.replace("page=1", "page=$page")
 
-            Log.d("adixtream", "Memuat Kategori: $apiUrl")
-            val responseText = app.get(apiUrl).text
+            Log.d("adixtream", "Memuat Kategori API: $apiUrl")
+            
+            // Tambahkan Header Accept JSON untuk memastikan server merespons dengan benar
+            val responseText = app.get(
+                url = apiUrl,
+                headers = mapOf("Accept" to "application/json, text/plain, */*")
+            ).text
+            
             val categoryItems = mutableListOf<SearchResponse>()
             var hasNextPage = false
 
@@ -137,7 +135,7 @@ class IdlixProvider : MainAPI() {
                     )
                 }
             } catch (e: Exception) {
-                Log.e("adixtream", "Gagal parse kategori $url: ${e.message}")
+                Log.e("adixtream", "Gagal parse kategori API: ${e.message}")
             }
 
             return newHomePageResponse(request.name, categoryItems.distinctBy { it.url }, hasNext = hasNextPage)
