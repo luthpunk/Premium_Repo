@@ -62,6 +62,7 @@ open class P2PExtractor : ExtractorApi() {
     override var name = "P2P"
     override var mainUrl = "https://cloud.hownetwork.xyz"
     override val requiresReferer = false
+    
     data class HownetworkResponse(val file: String?, val link: String?, val label: String?)
 
     override suspend fun getUrl(url: String, referer: String?): List<ExtractorLink>? {
@@ -75,10 +76,12 @@ open class P2PExtractor : ExtractorApi() {
         )
         val formBody = mapOf("r" to "https://playeriframe.sbs/", "d" to "cloud.hownetwork.xyz")
         val sources = mutableListOf<ExtractorLink>()
+        
         try {
             val response = app.post(apiUrl, headers = headers, data = formBody).text
             val json = tryParseJson<HownetworkResponse>(response)
             val videoUrl = json?.file ?: json?.link
+   
             if (!videoUrl.isNullOrBlank()) {
                 sources.add(newExtractorLink(source = name, name = name, url = videoUrl, type = ExtractorLinkType.M3U8) {
                     this.referer = mainUrl
@@ -91,7 +94,7 @@ open class P2PExtractor : ExtractorApi() {
 }
 
 // ============================================================================
-// 3. F16 EXTRACTOR (FIXED: KEY NAME 'URL')
+// 3. F16 EXTRACTOR (FIXED: ADDED COOKIE SYNC)
 // ============================================================================
 open class F16Extractor : ExtractorApi() {
     override var name = "F16"
@@ -100,8 +103,7 @@ open class F16Extractor : ExtractorApi() {
 
     data class F16Playback(val playback: PlaybackData?)
     data class PlaybackData(val iv: String?, val payload: String?, val key_parts: List<String>?)
-    
-    // UPDATE: Mengganti 'file' menjadi 'url' sesuai hasil JSON
+  
     data class DecryptedSource(val url: String?, val label: String?)
     data class DecryptedResponse(val sources: List<DecryptedSource>?)
 
@@ -137,12 +139,13 @@ open class F16Extractor : ExtractorApi() {
             val jwtSignature = randomHex(43)
             val token = "$jwtHeader.$jwtPayloadEncoded.$jwtSignature"
 
-            // HEADERS WAJIB
+            // HEADERS WAJIB (DIPERBARUI: Menambahkan Cookie Sinkronisasi)
             val headers = mapOf(
                 "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
                 "Referer" to pageUrl,
                 "Origin" to mainUrl,
                 "Content-Type" to "application/json",
+                "Cookie" to "byse_viewer_id=$viewerId; byse_device_id=$deviceId", // INI KUNCI FIX-NYA BRO
                 "x-embed-origin" to "playeriframe.sbs",
                 "x-embed-parent" to pageUrl,
                 "x-embed-referer" to "https://playeriframe.sbs/"
@@ -157,14 +160,14 @@ open class F16Extractor : ExtractorApi() {
                     "confidence" to 0.91
                 )
             )
-            
-            // Request API
+          
+            // Request API Playback
             val responseText = app.post(apiUrl, headers = headers, json = jsonPayload).text
             val json = tryParseJson<F16Playback>(responseText)
             val pb = json?.playback
 
+            // Jika berhasil lolos dan dapat data payload
             if (pb != null && pb.payload != null && pb.iv != null && !pb.key_parts.isNullOrEmpty()) {
-                
                 // 1. Gabungkan Key Parts
                 val part1 = Base64.decode(pb.key_parts[0].fixBase64(), Base64.URL_SAFE)
                 val part2 = Base64.decode(pb.key_parts[1].fixBase64(), Base64.URL_SAFE)
@@ -176,7 +179,6 @@ open class F16Extractor : ExtractorApi() {
                 if (decryptedJson != null) {
                     val result = tryParseJson<DecryptedResponse>(decryptedJson)
                     result?.sources?.forEach { source ->
-                        // UPDATE: Menggunakan source.url
                         if (!source.url.isNullOrBlank()) {
                             sources.add(newExtractorLink(
                                 source = "CAST",
@@ -185,12 +187,13 @@ open class F16Extractor : ExtractorApi() {
                                 type = ExtractorLinkType.M3U8
                             ) {
                                 this.referer = "$mainUrl/"
-                                // UPDATE: Auto Quality (480p -> 480)
                                 this.quality = getQualityFromName(source.label)
                             })
                         }
                     }
                 }
+            } else {
+                Log.e("F16Extractor", "Gagal mendapatkan payload. Server mungkin mewajibkan /access/attest.")
             }
         } catch (e: Exception) {
             Log.e("F16Extractor", "Error: ${e.message}")
