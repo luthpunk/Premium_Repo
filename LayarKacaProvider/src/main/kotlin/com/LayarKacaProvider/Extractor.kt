@@ -182,17 +182,18 @@ open class F16Extractor : ExtractorApi() {
                         val streamUrl = source.url
                         if (!streamUrl.isNullOrBlank()) {
                             
-                            // MENGGUNAKAN KONSTRUKTOR LANGSUNG
+                            // KEMBALI KE newExtractorLink AGAR LOLOS BUILD (TIDAK DEPRECATED)
                             sources.add(
-                                ExtractorLink(
+                                newExtractorLink(
                                     source = "CAST",
                                     name = "CAST ${source.label ?: "Auto"}",
                                     url = streamUrl,
-                                    referer = "", // REFERER DIKOSONGKAN AGAR LOLOS SEPERTI SKENARIO A
-                                    quality = getQualityFromName(source.label),
-                                    isM3u8 = true,
-                                    headers = videoHeaders
-                                )
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = "" // INI KUNCI UTAMANYA: KOSONGKAN REFERER
+                                    this.quality = getQualityFromName(source.label)
+                                    this.headers = videoHeaders
+                                }
                             )
                             
                         }
