@@ -127,6 +127,25 @@ class LayarKacaProvider : MainAPI() {
         val actors = document.select("div.detail p:contains(Bintang Film) a, div.cast a").map { ActorData(Actor(it.text(), "")) }
         val recommendations = document.select("div.related-video li.slider article, div.mob-related-series li.slider article").mapNotNull { toSearchResult(it) }
 
+        // ==============================================
+        // FITUR BARU: TRAILER EXTRACTION
+        // ==============================================
+        var trailerUrl = document.select("iframe[src*='youtube.com']").attr("src")
+        if (trailerUrl.isNullOrEmpty()) {
+            trailerUrl = document.select("a.btn-trailer, a:contains(Trailer)").attr("href")
+        }
+        if (trailerUrl.isNullOrEmpty()) {
+            // Fallback: Tarik paksa ID Youtube dari HTML mentah jika disembunyikan pakai Javascript
+            trailerUrl = Regex("youtube\\.com/embed/([a-zA-Z0-9_-]+)").find(document.html())?.groupValues?.get(1) ?: ""
+        }
+        
+        // Memisahkan 11 Karakter ID Youtube
+        val ytIdRegex = Regex("(?:youtube\\.com/(?:watch\\?v=|embed/)|youtu\\.be/)([a-zA-Z0-9_-]{11})")
+        val ytId = ytIdRegex.find(trailerUrl)?.groupValues?.get(1) ?: trailerUrl.takeIf { it.length == 11 }
+        
+        val trailerData = if (!ytId.isNullOrEmpty()) TrailerData(ytId) else null
+        // ==============================================
+
         val episodes = ArrayList<Episode>()
         val jsonScript = document.select("script#season-data").html()
 
@@ -154,11 +173,13 @@ class LayarKacaProvider : MainAPI() {
             newTvSeriesLoadResponse(title, cleanUrl, TvType.TvSeries, episodes) {
                 this.posterUrl = poster; this.plot = plot; this.year = year
                 this.score = Score.from(ratingScore, 10); this.tags = tags; this.actors = actors; this.recommendations = recommendations
+                this.trailer = trailerData // MASUKKAN TRAILER KE SERIES
             }
         } else {
             newMovieLoadResponse(title, cleanUrl, TvType.Movie, cleanUrl) {
                 this.posterUrl = poster; this.plot = plot; this.year = year
                 this.score = Score.from(ratingScore, 10); this.tags = tags; this.actors = actors; this.recommendations = recommendations
+                this.trailer = trailerData // MASUKKAN TRAILER KE MOVIE
             }
         }
     }
