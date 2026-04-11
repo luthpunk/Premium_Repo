@@ -94,7 +94,7 @@ open class P2PExtractor : ExtractorApi() {
 }
 
 // ============================================================================
-// 3. F16 EXTRACTOR (FINAL FIX: COOKIE SYNC + VIDEO ORIGIN HEADER)
+// 3. F16 EXTRACTOR (FINAL BOSS FIX: NO REFERER & EXACT USER-AGENT)
 // ============================================================================
 open class F16Extractor : ExtractorApi() {
     override var name = "F16"
@@ -126,11 +126,9 @@ open class F16Extractor : ExtractorApi() {
             val apiUrl = "$mainUrl/api/videos/$videoId/embed/playback"
             val pageUrl = "$mainUrl/e/$videoId"
             
-            // Generate Fake ID
             val viewerId = randomHex(32) 
             val deviceId = randomHex(32)
             
-            // Construct Fake Token
             val jwtHeader = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" 
             val timestamp = System.currentTimeMillis() / 1000
             val jwtPayload = """{"viewer_id":"$viewerId","device_id":"$deviceId","confidence":0.91,"iat":$timestamp,"exp":${timestamp + 600}}"""
@@ -138,9 +136,11 @@ open class F16Extractor : ExtractorApi() {
             val jwtSignature = randomHex(43)
             val token = "$jwtHeader.$jwtPayloadEncoded.$jwtSignature"
 
-            // HEADERS UNTUK MENGAMBIL PAYLOAD ENKRIPSI (HARUS ADA COOKIE)
+            // KUNCI UTAMA: Kita patenkan 1 User-Agent untuk API & Player
+            val customUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+
             val headers = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+                "User-Agent" to customUserAgent,
                 "Referer" to pageUrl,
                 "Origin" to mainUrl,
                 "Content-Type" to "application/json",
@@ -173,30 +173,33 @@ open class F16Extractor : ExtractorApi() {
                 if (decryptedJson != null) {
                     val result = tryParseJson<DecryptedResponse>(decryptedJson)
                     
-                    // HEADERS UNTUK PEMUTARAN VIDEO DI PLAYER (HARUS ADA ORIGIN)
+                    // FIX: Hanya pakai User-Agent yang sama, TANPA Referer/Origin
                     val videoHeaders = mapOf(
-                        "Origin" to mainUrl,
-                        "Referer" to "$mainUrl/",
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                        "User-Agent" to customUserAgent
                     )
 
                     result?.sources?.forEach { source ->
-                        if (!source.url.isNullOrBlank()) {
-                            sources.add(newExtractorLink(
-                                source = "CAST",
-                                name = "CAST ${source.label ?: "Auto"}",
-                                url = source.url,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.referer = "$mainUrl/"
-                                this.headers = videoHeaders // SISIPKAN HEADERS DI SINI
-                                this.quality = getQualityFromName(source.label)
-                            })
+                        val streamUrl = source.url
+                        if (!streamUrl.isNullOrBlank()) {
+                            
+                            // MENGGUNAKAN KONSTRUKTOR LANGSUNG
+                            sources.add(
+                                ExtractorLink(
+                                    source = "CAST",
+                                    name = "CAST ${source.label ?: "Auto"}",
+                                    url = streamUrl,
+                                    referer = "", // REFERER DIKOSONGKAN AGAR LOLOS SEPERTI SKENARIO A
+                                    quality = getQualityFromName(source.label),
+                                    isM3u8 = true,
+                                    headers = videoHeaders
+                                )
+                            )
+                            
                         }
                     }
                 }
             } else {
-                Log.e("F16Extractor", "Gagal mendapatkan payload. Server mungkin mewajibkan challenge /access/attest.")
+                Log.e("F16Extractor", "Gagal mendapatkan payload.")
             }
         } catch (e: Exception) {
             Log.e("F16Extractor", "Error: ${e.message}")
