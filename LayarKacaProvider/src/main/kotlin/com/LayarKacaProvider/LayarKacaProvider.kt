@@ -143,7 +143,8 @@ class LayarKacaProvider : MainAPI() {
         val ytIdRegex = Regex("(?:youtube\\.com/(?:watch\\?v=|embed/)|youtu\\.be/)([a-zA-Z0-9_-]{11})")
         val ytId = ytIdRegex.find(trailerUrl)?.groupValues?.get(1) ?: trailerUrl.takeIf { it.length == 11 }
         
-        val trailerData = if (!ytId.isNullOrEmpty()) TrailerData(ytId) else null
+        // FIX: Membangun Full URL dan menaruhnya ke String, bukan langsung jadi TrailerData
+        val finalTrailerUrl = if (!ytId.isNullOrEmpty()) "https://www.youtube.com/watch?v=$ytId" else null
         // ==============================================
 
         val episodes = ArrayList<Episode>()
@@ -173,13 +174,13 @@ class LayarKacaProvider : MainAPI() {
             newTvSeriesLoadResponse(title, cleanUrl, TvType.TvSeries, episodes) {
                 this.posterUrl = poster; this.plot = plot; this.year = year
                 this.score = Score.from(ratingScore, 10); this.tags = tags; this.actors = actors; this.recommendations = recommendations
-                this.trailer = trailerData // MASUKKAN TRAILER KE SERIES
+                addTrailer(finalTrailerUrl) // FIX: MENGGUNAKAN FUNGSI BAWAAN CLOUDSTREAM
             }
         } else {
             newMovieLoadResponse(title, cleanUrl, TvType.Movie, cleanUrl) {
                 this.posterUrl = poster; this.plot = plot; this.year = year
                 this.score = Score.from(ratingScore, 10); this.tags = tags; this.actors = actors; this.recommendations = recommendations
-                this.trailer = trailerData // MASUKKAN TRAILER KE MOVIE
+                addTrailer(finalTrailerUrl) // FIX: MENGGUNAKAN FUNGSI BAWAAN CLOUDSTREAM
             }
         }
     }
