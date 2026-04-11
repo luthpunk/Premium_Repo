@@ -56,7 +56,7 @@ open class EmturbovidExtractor : ExtractorApi() {
 }
 
 // ============================================================================
-// 2. P2P EXTRACTOR (ORIGINAL - DO NOT TOUCH)
+// 2. P2P EXTRACTOR
 // ============================================================================
 open class P2PExtractor : ExtractorApi() {
     override var name = "P2P"
@@ -94,7 +94,7 @@ open class P2PExtractor : ExtractorApi() {
 }
 
 // ============================================================================
-// 3. F16 EXTRACTOR (FIXED: ADDED COOKIE SYNC)
+// 3. F16 EXTRACTOR (FINAL FIX: COOKIE SYNC + VIDEO ORIGIN HEADER)
 // ============================================================================
 open class F16Extractor : ExtractorApi() {
     override var name = "F16"
@@ -113,7 +113,6 @@ open class F16Extractor : ExtractorApi() {
         return s
     }
 
-    // Helper untuk membuat Hex String acak
     private fun randomHex(length: Int): String {
         val chars = "0123456789abcdef"
         return (1..length).map { chars[Random.nextInt(chars.length)] }.joinToString("")
@@ -131,7 +130,7 @@ open class F16Extractor : ExtractorApi() {
             val viewerId = randomHex(32) 
             val deviceId = randomHex(32)
             
-            // Construct Fake Token (JWT-like structure)
+            // Construct Fake Token
             val jwtHeader = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" 
             val timestamp = System.currentTimeMillis() / 1000
             val jwtPayload = """{"viewer_id":"$viewerId","device_id":"$deviceId","confidence":0.91,"iat":$timestamp,"exp":${timestamp + 600}}"""
@@ -139,19 +138,18 @@ open class F16Extractor : ExtractorApi() {
             val jwtSignature = randomHex(43)
             val token = "$jwtHeader.$jwtPayloadEncoded.$jwtSignature"
 
-            // HEADERS WAJIB (DIPERBARUI: Menambahkan Cookie Sinkronisasi)
+            // HEADERS UNTUK MENGAMBIL PAYLOAD ENKRIPSI (HARUS ADA COOKIE)
             val headers = mapOf(
                 "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
                 "Referer" to pageUrl,
                 "Origin" to mainUrl,
                 "Content-Type" to "application/json",
-                "Cookie" to "byse_viewer_id=$viewerId; byse_device_id=$deviceId", // INI KUNCI FIX-NYA BRO
+                "Cookie" to "byse_viewer_id=$viewerId; byse_device_id=$deviceId",
                 "x-embed-origin" to "playeriframe.sbs",
                 "x-embed-parent" to pageUrl,
                 "x-embed-referer" to "https://playeriframe.sbs/"
             )
 
-            // BODY JSON
             val jsonPayload = mapOf(
                 "fingerprint" to mapOf(
                     "token" to token,
@@ -161,23 +159,27 @@ open class F16Extractor : ExtractorApi() {
                 )
             )
           
-            // Request API Playback
             val responseText = app.post(apiUrl, headers = headers, json = jsonPayload).text
             val json = tryParseJson<F16Playback>(responseText)
             val pb = json?.playback
 
-            // Jika berhasil lolos dan dapat data payload
             if (pb != null && pb.payload != null && pb.iv != null && !pb.key_parts.isNullOrEmpty()) {
-                // 1. Gabungkan Key Parts
                 val part1 = Base64.decode(pb.key_parts[0].fixBase64(), Base64.URL_SAFE)
                 val part2 = Base64.decode(pb.key_parts[1].fixBase64(), Base64.URL_SAFE)
                 val combinedKey = part1 + part2 
 
-                // 2. Decrypt AES-GCM
                 val decryptedJson = decryptAesGcm(pb.payload, combinedKey, pb.iv)
 
                 if (decryptedJson != null) {
                     val result = tryParseJson<DecryptedResponse>(decryptedJson)
+                    
+                    // HEADERS UNTUK PEMUTARAN VIDEO DI PLAYER (HARUS ADA ORIGIN)
+                    val videoHeaders = mapOf(
+                        "Origin" to mainUrl,
+                        "Referer" to "$mainUrl/",
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+                    )
+
                     result?.sources?.forEach { source ->
                         if (!source.url.isNullOrBlank()) {
                             sources.add(newExtractorLink(
@@ -187,13 +189,14 @@ open class F16Extractor : ExtractorApi() {
                                 type = ExtractorLinkType.M3U8
                             ) {
                                 this.referer = "$mainUrl/"
+                                this.headers = videoHeaders // SISIPKAN HEADERS DI SINI
                                 this.quality = getQualityFromName(source.label)
                             })
                         }
                     }
                 }
             } else {
-                Log.e("F16Extractor", "Gagal mendapatkan payload. Server mungkin mewajibkan /access/attest.")
+                Log.e("F16Extractor", "Gagal mendapatkan payload. Server mungkin mewajibkan challenge /access/attest.")
             }
         } catch (e: Exception) {
             Log.e("F16Extractor", "Error: ${e.message}")
