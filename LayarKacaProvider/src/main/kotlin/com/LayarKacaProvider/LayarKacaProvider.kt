@@ -128,22 +128,20 @@ class LayarKacaProvider : MainAPI() {
         val recommendations = document.select("div.related-video li.slider article, div.mob-related-series li.slider article").mapNotNull { toSearchResult(it) }
 
         // ==============================================
-        // FITUR BARU: TRAILER EXTRACTION
+        // FITUR TRAILER EXTRACTION
         // ==============================================
         var trailerUrl = document.select("iframe[src*='youtube.com']").attr("src")
         if (trailerUrl.isNullOrEmpty()) {
             trailerUrl = document.select("a.btn-trailer, a:contains(Trailer)").attr("href")
         }
         if (trailerUrl.isNullOrEmpty()) {
-            // Fallback: Tarik paksa ID Youtube dari HTML mentah jika disembunyikan pakai Javascript
+            // Fallback: Tarik paksa ID Youtube dari HTML mentah jika disembunyikan
             trailerUrl = Regex("youtube\\.com/embed/([a-zA-Z0-9_-]+)").find(document.html())?.groupValues?.get(1) ?: ""
         }
         
-        // Memisahkan 11 Karakter ID Youtube
         val ytIdRegex = Regex("(?:youtube\\.com/(?:watch\\?v=|embed/)|youtu\\.be/)([a-zA-Z0-9_-]{11})")
         val ytId = ytIdRegex.find(trailerUrl)?.groupValues?.get(1) ?: trailerUrl.takeIf { it.length == 11 }
         
-        // FIX: Membangun Full URL dan menaruhnya ke String, bukan langsung jadi TrailerData
         val finalTrailerUrl = if (!ytId.isNullOrEmpty()) "https://www.youtube.com/watch?v=$ytId" else null
         // ==============================================
 
@@ -174,13 +172,29 @@ class LayarKacaProvider : MainAPI() {
             newTvSeriesLoadResponse(title, cleanUrl, TvType.TvSeries, episodes) {
                 this.posterUrl = poster; this.plot = plot; this.year = year
                 this.score = Score.from(ratingScore, 10); this.tags = tags; this.actors = actors; this.recommendations = recommendations
-                addTrailer(finalTrailerUrl) // FIX: MENGGUNAKAN FUNGSI BAWAAN CLOUDSTREAM
+                
+                // Memasukkan Trailer ke Movie Response
+                if (!finalTrailerUrl.isNullOrEmpty()) {
+                    this.trailers.add(TrailerData(
+                        extractorUrl = finalTrailerUrl,
+                        referer = null,
+                        raw = false 
+                    ))
+                }
             }
         } else {
             newMovieLoadResponse(title, cleanUrl, TvType.Movie, cleanUrl) {
                 this.posterUrl = poster; this.plot = plot; this.year = year
                 this.score = Score.from(ratingScore, 10); this.tags = tags; this.actors = actors; this.recommendations = recommendations
-                addTrailer(finalTrailerUrl) // FIX: MENGGUNAKAN FUNGSI BAWAAN CLOUDSTREAM
+                
+                // Memasukkan Trailer ke Series Response
+                if (!finalTrailerUrl.isNullOrEmpty()) {
+                    this.trailers.add(TrailerData(
+                        extractorUrl = finalTrailerUrl,
+                        referer = null,
+                        raw = false
+                    ))
+                }
             }
         }
     }
