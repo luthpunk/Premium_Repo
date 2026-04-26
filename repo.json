@@ -4,8 +4,33 @@
   "manifestVersion": 1,
   "plugins": [
     {
+      "name": "NgeFilm",
+      "url": "https://raw.githubusercontent.com/luthpunk/Premium_Repo/main/NgeFilm.cs3",
+      "version": 1
+    },
+    {
+      "name": "Adicinemax21",
+      "url": "https://raw.githubusercontent.com/luthpunk/Premium_Repo/main/Adicinemax21.cs3",
+      "version": 1
+    },
+    {
+      "name": "Adimoviebox",
+      "url": "https://raw.githubusercontent.com/luthpunk/Premium_Repo/main/Adimoviebox.cs3",
+      "version": 1
+    },
+    {
       "name": "AdiDrakor",
-      "url": "https://raw.githubusercontent.com/luthpunk/Premium_Repo/main/AdiDrakor/build/AdiDrakor.cs3",
+      "url": "https://raw.githubusercontent.com/luthpunk/Premium_Repo/main/AdiDrakor.cs3",
+      "version": 1
+    },
+    {
+      "name": "IdlixProvider",
+      "url": "https://raw.githubusercontent.com/luthpunk/Premium_Repo/main/IdlixProvider.cs3",
+      "version": 1
+    },
+    {
+      "name": "LayarKacaProvider",
+      "url": "https://raw.githubusercontent.com/luthpunk/Premium_Repo/main/LayarKacaProvider.cs3",
       "version": 1
     }
   ]
