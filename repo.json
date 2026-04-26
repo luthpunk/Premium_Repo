@@ -1,0 +1,12 @@
+{
+  "name": "My Repo",
+  "description": "Custom Cloudstream Repo",
+  "manifestVersion": 1,
+  "plugins": [
+    {
+      "name": "AdiDrakor",
+      "url": "https://raw.githubusercontent.com/luthpunk/Premium_Repo/main/AdiDrakor/build/AdiDrakor.cs3",
+      "version": 1
+    }
+  ]
+}
